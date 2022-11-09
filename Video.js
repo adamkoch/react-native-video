@@ -1,6 +1,7 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
-import { StyleSheet, requireNativeComponent, NativeModules, View, ViewPropTypes, Image, Platform, findNodeHandle } from 'react-native';
+import { StyleSheet, requireNativeComponent, NativeModules, UIManager, View, Image, Platform, findNodeHandle } from 'react-native';
+import { ViewPropTypes, ImagePropTypes } from 'deprecated-react-native-prop-types';
 import resolveAssetSource from 'react-native/Libraries/Image/resolveAssetSource';
 import TextTrackType from './TextTrackType';
 import FilterType from './FilterType';
@@ -13,7 +14,8 @@ const styles = StyleSheet.create({
   },
 });
 
-export { TextTrackType, FilterType, DRMType };
+const { VideoDecoderProperties } = NativeModules
+export { TextTrackType, FilterType, DRMType, VideoDecoderProperties }
 
 export default class Video extends Component {
 
@@ -96,6 +98,12 @@ export default class Video extends Component {
   _onLoadStart = (event) => {
     if (this.props.onLoadStart) {
       this.props.onLoadStart(event.nativeEvent);
+    }
+  };
+
+  _onPlaybackStateChanged = (event) => {
+    if (this.props.onPlaybackStateChanged) {
+      this.props.onPlaybackStateChanged(event.nativeEvent);
     }
   };
 
@@ -249,15 +257,15 @@ export default class Video extends Component {
           NativeModules.VideoManager.setLicenseError && NativeModules.VideoManager.setLicenseError(error, findNodeHandle(this._root));
         });
       } else {
-        NativeModules.VideoManager.setLicenseError && NativeModules.VideoManager.setLicenseError("No spc received", findNodeHandle(this._root));
+        NativeModules.VideoManager.setLicenseError && NativeModules.VideoManager.setLicenseError('No spc received', findNodeHandle(this._root));
       }
     }
   }
   getViewManagerConfig = viewManagerName => {
-    if (!NativeModules.UIManager.getViewManagerConfig) {
-      return NativeModules.UIManager[viewManagerName];
+    if (!UIManager.getViewManagerConfig) {
+      return UIManager[viewManagerName];
     }
-    return NativeModules.UIManager.getViewManagerConfig(viewManagerName);
+    return UIManager.getViewManagerConfig(viewManagerName);
   };
 
   render() {
@@ -271,11 +279,17 @@ export default class Video extends Component {
     }
 
     if (!uri) {
-      console.warn('Trying to load empty source.');
+      console.log('Trying to load empty source.');
     }
 
-    const isNetwork = !!(uri && uri.match(/^https?:/));
-    const isAsset = !!(uri && uri.match(/^(assets-library|ipod-library|file|content|ms-appx|ms-appdata):/));
+    const isNetwork = !!(uri && uri.match(/^https?:/i));
+    const isAsset = !!(uri && uri.match(/^(assets-library|ph|ipod-library|file|content|ms-appx|ms-appdata):/i));
+
+    if ((uri || uri === '') && !isNetwork && !isAsset) {
+      if (this.props.onError) {
+        this.props.onError({error: {errorString: 'invalid url, player will stop', errorCode: 'INVALID_URL'}});
+      }
+    }
 
     let nativeResizeMode;
     const RCTVideoInstance = this.getViewManagerConfig('RCTVideo');
@@ -305,6 +319,7 @@ export default class Video extends Component {
         requestHeaders: source.headers ? this.stringsOnlyObject(source.headers) : {},
       },
       onVideoLoadStart: this._onLoadStart,
+      onVideoPlaybackStateChanged: this._onPlaybackStateChanged,
       onVideoLoad: this._onLoad,
       onVideoError: this._onError,
       onVideoProgress: this._onProgress,
@@ -403,7 +418,7 @@ Video.propTypes = {
   ]),
   drm: PropTypes.shape({
     type: PropTypes.oneOf([
-      DRMType.CLEARKEY, DRMType.FAIRPLAY, DRMType.WIDEVINE, DRMType.PLAYREADY
+      DRMType.CLEARKEY, DRMType.FAIRPLAY, DRMType.WIDEVINE, DRMType.PLAYREADY,
     ]),
     licenseServer: PropTypes.string,
     headers: PropTypes.shape({}),
@@ -411,11 +426,12 @@ Video.propTypes = {
     certificateUrl: PropTypes.string,
     getLicense: PropTypes.func,
   }),
+  localSourceEncryptionKeyScheme: PropTypes.string,
   minLoadRetryCount: PropTypes.number,
   maxBitRate: PropTypes.number,
   resizeMode: PropTypes.string,
   poster: PropTypes.string,
-  posterResizeMode: Image.propTypes.resizeMode,
+  posterResizeMode: ImagePropTypes.resizeMode,
   repeat: PropTypes.bool,
   automaticallyWaitsToMinimizeStalling: PropTypes.bool,
   allowsExternalPlayback: PropTypes.bool,
@@ -460,8 +476,8 @@ Video.propTypes = {
     maxBufferMs: PropTypes.number,
     bufferForPlaybackMs: PropTypes.number,
     bufferForPlaybackAfterRebufferMs: PropTypes.number,
+    maxHeapAllocationPercent: PropTypes.number,
   }),
-  stereoPan: PropTypes.number,
   rate: PropTypes.number,
   pictureInPicture: PropTypes.bool,
   playInBackground: PropTypes.bool,
@@ -469,16 +485,28 @@ Video.propTypes = {
   playWhenInactive: PropTypes.bool,
   ignoreSilentSwitch: PropTypes.oneOf(['ignore', 'obey']),
   reportBandwidth: PropTypes.bool,
+  contentStartTime: PropTypes.number,
   disableFocus: PropTypes.bool,
+  focusable: PropTypes.bool,
+  disableBuffering: PropTypes.bool,
   controls: PropTypes.bool,
   audioOnly: PropTypes.bool,
   currentTime: PropTypes.number,
   fullscreenAutorotate: PropTypes.bool,
   fullscreenOrientation: PropTypes.oneOf(['all', 'landscape', 'portrait']),
   progressUpdateInterval: PropTypes.number,
+  subtitleStyle: PropTypes.shape({
+    paddingTop: PropTypes.number,
+    paddingBottom: PropTypes.number,
+    paddingLeft: PropTypes.number,
+    paddingRight: PropTypes.number,
+    fontSize: PropTypes.number,
+  }),
   useTextureView: PropTypes.bool,
+  useSecureView: PropTypes.bool,
   hideShutterView: PropTypes.bool,
   onLoadStart: PropTypes.func,
+  onPlaybackStateChanged: PropTypes.func,
   onLoad: PropTypes.func,
   onBuffer: PropTypes.func,
   onError: PropTypes.func,
