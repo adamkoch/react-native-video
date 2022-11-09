@@ -675,6 +675,10 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
             _playerLayer = AVPlayerLayer(player: _player)
             _playerLayer?.frame = self.bounds
             _playerLayer?.needsDisplayOnBoundsChange = true
+
+            // Fix weird border issues: https://stackoverflow.com/a/50932646/268156
+            _playerLayer?.shouldRasterize = true
+            _playerLayer?.rasterizationScale = UIScreen.main.scale
             
             // to prevent video from being animated when resizeMode is 'cover'
             // resize mode must be set before layer is added
@@ -685,9 +689,10 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
                 self.layer.addSublayer(_playerLayer)
             }
             self.layer.needsDisplayOnBoundsChange = true
-#if TARGET_OS_IOS
-            _pip.setupPipController(_playerLayer)
-#endif
+            // Disable PiP altogether
+            // #if TARGET_OS_IOS
+            // _pip.setupPipController(_playerLayer)
+            // #endif
         }
     }
     
