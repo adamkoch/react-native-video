@@ -597,7 +597,8 @@ class ReactExoplayerView extends FrameLayout implements
         );
         DefaultRenderersFactory renderersFactory =
                 new DefaultRenderersFactory(getContext())
-                        .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF);
+                        .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
+                        .setEnableDecoderFallback(true); // Set software fallback as per: https://github.com/google/ExoPlayer/issues/6168#issuecomment-1254770227
         player = new ExoPlayer.Builder(getContext(), renderersFactory)
                     .setTrackSelector(self.trackSelector)
                     .setBandwidthMeter(bandwidthMeter)
