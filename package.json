@@ -28,6 +28,7 @@
     },
     "files": [
         "android",
+        "android-mediaplayer",
         "ios",
         "windows",
         "FilterType.js",
