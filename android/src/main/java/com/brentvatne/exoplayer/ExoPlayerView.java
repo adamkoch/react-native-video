@@ -125,6 +125,7 @@ public final class ExoPlayerView extends FrameLayout implements AdViewProvider {
             }
         } else {
             view = new TextureView(context);
+            ((TextureView) view).setOpaque(false);
         }
         view.setLayoutParams(layoutParams);
 
