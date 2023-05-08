@@ -117,6 +117,24 @@ export default class Video extends Component {
     }
   };
 
+  _onAudioTracks = (event) => {
+    if (this.props.onAudioTracks) {
+      this.props.onAudioTracks(event.nativeEvent);
+    }
+  };
+
+  _onTextTracks = (event) => {
+    if (this.props.onTextTracks) {
+      this.props.onTextTracks(event.nativeEvent);
+    }
+  };
+
+  _onVideoTracks = (event) => {
+    if (this.props.onVideoTracks) {
+      this.props.onVideoTracks(event.nativeEvent);
+    }
+  };
+
   _onError = (event) => {
     if (this.props.onError) {
       this.props.onError(event.nativeEvent);
@@ -261,6 +279,13 @@ export default class Video extends Component {
       }
     }
   }
+
+  _onReceiveAdEvent = (event) => {
+    if (this.props.onReceiveAdEvent) {
+      this.props.onReceiveAdEvent(event.nativeEvent);
+    }
+  };
+
   getViewManagerConfig = viewManagerName => {
     if (!UIManager.getViewManagerConfig) {
       return UIManager[viewManagerName];
@@ -317,10 +342,15 @@ export default class Video extends Component {
         mainVer: source.mainVer || 0,
         patchVer: source.patchVer || 0,
         requestHeaders: source.headers ? this.stringsOnlyObject(source.headers) : {},
+        startTime: source.startTime || 0,
+        endTime: source.endTime
       },
       onVideoLoadStart: this._onLoadStart,
       onVideoPlaybackStateChanged: this._onPlaybackStateChanged,
       onVideoLoad: this._onLoad,
+      onAudioTracks: this._onAudioTracks,
+      onTextTracks: this._onTextTracks,
+      onVideoTracks: this._onVideoTracks,
       onVideoError: this._onError,
       onVideoProgress: this._onProgress,
       onVideoSeek: this._onSeek,
@@ -343,6 +373,7 @@ export default class Video extends Component {
       onGetLicense: nativeProps.drm && nativeProps.drm.getLicense && this._onGetLicense,
       onPictureInPictureStatusChanged: this._onPictureInPictureStatusChanged,
       onRestoreUserInterfaceForPictureInPictureStop: this._onRestoreUserInterfaceForPictureInPictureStop,
+      onReceiveAdEvent: this._onReceiveAdEvent,
     });
 
     const posterStyle = {
@@ -491,7 +522,6 @@ Video.propTypes = {
   disableBuffering: PropTypes.bool,
   controls: PropTypes.bool,
   audioOnly: PropTypes.bool,
-  currentTime: PropTypes.number,
   fullscreenAutorotate: PropTypes.bool,
   fullscreenOrientation: PropTypes.oneOf(['all', 'landscape', 'portrait']),
   progressUpdateInterval: PropTypes.number,
@@ -508,6 +538,9 @@ Video.propTypes = {
   onLoadStart: PropTypes.func,
   onPlaybackStateChanged: PropTypes.func,
   onLoad: PropTypes.func,
+  onAudioTracks: PropTypes.func,
+  onTextTracks: PropTypes.func,
+  onVideoTracks: PropTypes.func,
   onBuffer: PropTypes.func,
   onError: PropTypes.func,
   onProgress: PropTypes.func,
@@ -525,15 +558,11 @@ Video.propTypes = {
   onAudioFocusChanged: PropTypes.func,
   onAudioBecomingNoisy: PropTypes.func,
   onPictureInPictureStatusChanged: PropTypes.func,
-  needsToRestoreUserInterfaceForPictureInPictureStop: PropTypes.func,
   onExternalPlaybackChange: PropTypes.func,
+  adTagUrl: PropTypes.string,
+  onReceiveAdEvent: PropTypes.func,
 
   /* Required by react-native */
-  scaleX: PropTypes.number,
-  scaleY: PropTypes.number,
-  translateX: PropTypes.number,
-  translateY: PropTypes.number,
-  rotation: PropTypes.number,
   ...ViewPropTypes,
 };
 
