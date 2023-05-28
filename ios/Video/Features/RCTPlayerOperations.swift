@@ -217,6 +217,7 @@ enum RCTPlayerOperations {
                 // setCategory:AVAudioSessionCategoryPlayback withOptions:mixWithOthers || duckOthers
                 // Failed to set category, error: 'what' Error Domain=NSOSStatusErrorDomain
                 // https://developer.apple.com/forums/thread/714598
+#if TARGET_OS_TV
                 if #available(iOS 16.0, *) {
                     do {
                         debugPrint("[RCTPlayerOperations] Reseting AVAudioSession category to playAndRecord with defaultToSpeaker options.")
@@ -225,6 +226,7 @@ enum RCTPlayerOperations {
                         debugPrint("[RCTPlayerOperations] Reseting AVAudioSession category and options problem. Error: \(error).")
                     }
                 }
+#endif
             }
         } else if let category = category, options == nil {
             do {
