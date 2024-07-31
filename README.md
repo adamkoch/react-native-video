@@ -1,31 +1,62 @@
 # react-native-video
+🎬 `<Video>` component for React Native
 
-> :warning: **Version 6 Alpha**: The following documentation may refer to features only available through the v6.0.0 alpha releases, [please see version 5.2.x](https://github.com/react-native-video/react-native-video/blob/v5.2.0/README.md) for the current documentation!
+## Documentation
+documentation is available at [thewidlarzgroup.github.io/react-native-video/](https://thewidlarzgroup.github.io/react-native-video/)
 
-## A `<Video>` component for react-native.
-Version 6.x recommends react-native >= 0.68.2. 
-<br>For older versions of react-native, [please use version 5.x](https://github.com/react-native-video/react-native-video/tree/v5.2.0).
+## Usage
 
-### Version 6.0.0 breaking changes
+```javascript
+// Load the module
 
-Version 6.0.0 is introducing dozens of breaking changes, mostly through updated dependecies and significant refactoring. While the API remains compatible, the significant internal changes require full testing with your app to ensure all functionality remains operational. Please view the [Changelog](CHANGELOG.md) for specific breaking changes.
+import Video, {VideoRef} from 'react-native-video';
 
-### Installing Version 6.0.0 Alphas
-Whilst we finalise version 6.0.0 you can install the latest alpha from npm
-Using npm:
+// Within your render function, assuming you have a file called
+// "background.mp4" in your project. You can include multiple videos
+// on a single screen if you like.
+
+const VideoPlayer = () => {
+ const videoRef = useRef<VideoRef>(null);
+ const background = require('./background.mp4');
+
+ return (
+   <Video 
+    // Can be a URL or a local file.
+    source={background}
+    // Store reference  
+    ref={videoRef}
+    // Callback when remote video is buffering                                      
+    onBuffer={onBuffer}
+    // Callback when video cannot be loaded              
+    onError={onError}               
+    style={styles.backgroundVideo}
+   />
+ )
+}
+
+// Later on in your styles..
+var styles = StyleSheet.create({
+  backgroundVideo: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    bottom: 0,
+    right: 0,
+  },
+});
 ```
-npm install --save react-native-video@alpha
-```
-using yarn:
-```
-yarn add react-native-video@alpha
-```
 
-## Useful resources
-- [Documentation](API.md)
-- [Changelog](CHANGELOG.md)
-- [Contribution guide](CONTRIBUTING.md)
-- [Usefull Side Project](./docs/PROJECTS.md)
-- [Advanced debugging](./docs/DEBUGGING.md)
+## Community support
+We have an discord server where you can ask questions and get help. [Join the discord server](https://discord.gg/WXuM4Tgb9X)
 
-**react-native-video** was originally created by [Brent Vatne](https://github.com/brentvatne)
+## Enterprise Support
+<p>
+  📱 <i>react-native-video</i> is provided <i>as it is</i>. For enterprise support or other business inquiries, <a href="https://www.thewidlarzgroup.com/">please contact us 🤝</a>. We can help you with the integration, customization and maintenance. We are providing both free and commercial support for this project. let's build something awesome together! 🚀
+</p>
+<a href="https://www.thewidlarzgroup.com/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/baners/twg-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="./docs/assets/baners/twg-light.png" />
+    <img alt="TheWidlarzGroup" src="./docs/assets/baners/twg-light.png" />
+  </picture>
+</a>
