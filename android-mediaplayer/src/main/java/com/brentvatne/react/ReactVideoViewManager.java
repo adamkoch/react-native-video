@@ -3,6 +3,7 @@ package com.brentvatne.react;
 import com.brentvatne.react.ReactVideoView.Events;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.ReadableMap;
+import com.facebook.react.bridge.ReadableMapKeySetIterator;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.common.MapBuilder;
 import com.facebook.react.uimanager.annotations.ReactProp;
@@ -81,6 +82,7 @@ public class ReactVideoViewManager extends SimpleViewManager<ReactVideoView> {
     public void setSrc(final ReactVideoView videoView, @Nullable ReadableMap src) {
         int mainVer = src.getInt(PROP_SRC_MAINVER);
         int patchVer = src.getInt(PROP_SRC_PATCHVER);
+        Map<String, String> headers = src.hasKey(PROP_SRC_HEADERS) ? toStringMap(src.getMap(PROP_SRC_HEADERS)) : null;
         if(mainVer<0) { mainVer = 0; }
         if(patchVer<0) { patchVer = 0; }
         if(mainVer>0) {
@@ -89,7 +91,7 @@ public class ReactVideoViewManager extends SimpleViewManager<ReactVideoView> {
                     src.getString(PROP_SRC_TYPE),
                     src.getBoolean(PROP_SRC_IS_NETWORK),
                     src.getBoolean(PROP_SRC_IS_ASSET),
-                    src.getMap(PROP_SRC_HEADERS),
+                    headers,
                     mainVer,
                     patchVer
             );
@@ -100,7 +102,7 @@ public class ReactVideoViewManager extends SimpleViewManager<ReactVideoView> {
                     src.getString(PROP_SRC_TYPE),
                     src.getBoolean(PROP_SRC_IS_NETWORK),
                     src.getBoolean(PROP_SRC_IS_ASSET),
-                    src.getMap(PROP_SRC_HEADERS)
+                    headers
                     );
         }
     }
@@ -168,5 +170,29 @@ public class ReactVideoViewManager extends SimpleViewManager<ReactVideoView> {
     @ReactProp(name = PROP_CONTROLS, defaultBoolean = false)
     public void setControls(final ReactVideoView videoView, final boolean controls) {
         videoView.setControls(controls);
+    }
+
+    /**
+     * toStringMap converts a {@link ReadableMap} into a HashMap.
+     *
+     * @param readableMap The ReadableMap to be conveted.
+     * @return A HashMap containing the data that was in the ReadableMap.
+     * @see 'Adapted from https://github.com/artemyarulin/react-native-eval/blob/master/android/src/main/java/com/evaluator/react/ConversionUtil.java'
+     */
+    public static Map<String, String> toStringMap(@Nullable ReadableMap readableMap) {
+        if (readableMap == null)
+            return null;
+
+        com.facebook.react.bridge.ReadableMapKeySetIterator iterator = readableMap.keySetIterator();
+        if (!iterator.hasNextKey())
+            return null;
+
+        Map<String, String> result = new HashMap<>();
+        while (iterator.hasNextKey()) {
+            String key = iterator.nextKey();
+            result.put(key, readableMap.getString(key));
+        }
+
+        return result;
     }
 }
