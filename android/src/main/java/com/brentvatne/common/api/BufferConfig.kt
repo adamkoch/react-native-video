@@ -20,8 +20,27 @@ class BufferConfig {
     var maxHeapAllocationPercent = BufferConfigPropUnsetDouble
     var minBackBufferMemoryReservePercent = BufferConfigPropUnsetDouble
     var minBufferMemoryReservePercent = BufferConfigPropUnsetDouble
+    var initialBitrate = BufferConfigPropUnsetInt
 
     var live: Live = Live()
+
+    /** return true if this and src are equals  */
+    override fun equals(other: Any?): Boolean {
+        if (other == null || other !is BufferConfig) return false
+        return (
+            cacheSize == other.cacheSize &&
+                minBufferMs == other.minBufferMs &&
+                maxBufferMs == other.maxBufferMs &&
+                bufferForPlaybackMs == other.bufferForPlaybackMs &&
+                bufferForPlaybackAfterRebufferMs == other.bufferForPlaybackAfterRebufferMs &&
+                backBufferDurationMs == other.backBufferDurationMs &&
+                maxHeapAllocationPercent == other.maxHeapAllocationPercent &&
+                minBackBufferMemoryReservePercent == other.minBackBufferMemoryReservePercent &&
+                minBufferMemoryReservePercent == other.minBufferMemoryReservePercent &&
+                initialBitrate == other.initialBitrate &&
+                live == other.live
+            )
+    }
 
     class Live {
         var maxPlaybackSpeed: Float = BufferConfigPropUnsetDouble.toFloat()
@@ -30,12 +49,23 @@ class BufferConfig {
         var minOffsetMs: Long = BufferConfigPropUnsetInt.toLong()
         var targetOffsetMs: Long = BufferConfigPropUnsetInt.toLong()
 
+        override fun equals(other: Any?): Boolean {
+            if (other == null || other !is Live) return false
+            return (
+                maxPlaybackSpeed == other.maxPlaybackSpeed &&
+                    minPlaybackSpeed == other.minPlaybackSpeed &&
+                    maxOffsetMs == other.maxOffsetMs &&
+                    minOffsetMs == other.minOffsetMs &&
+                    targetOffsetMs == other.targetOffsetMs
+                )
+        }
+
         companion object {
-            private val PROP_BUFFER_CONFIG_LIVE_MAX_PLAYBACK_SPEED = "maxPlaybackSpeed"
-            private val PROP_BUFFER_CONFIG_LIVE_MIN_PLAYBACK_SPEED = "minPlaybackSpeed"
-            private val PROP_BUFFER_CONFIG_LIVE_MAX_OFFSET_MS = "maxOffsetMs"
-            private val PROP_BUFFER_CONFIG_LIVE_MIN_OFFSET_MS = "minOffsetMs"
-            private val PROP_BUFFER_CONFIG_LIVE_TARGET_OFFSET_MS = "targetOffsetMs"
+            private const val PROP_BUFFER_CONFIG_LIVE_MAX_PLAYBACK_SPEED = "maxPlaybackSpeed"
+            private const val PROP_BUFFER_CONFIG_LIVE_MIN_PLAYBACK_SPEED = "minPlaybackSpeed"
+            private const val PROP_BUFFER_CONFIG_LIVE_MAX_OFFSET_MS = "maxOffsetMs"
+            private const val PROP_BUFFER_CONFIG_LIVE_MIN_OFFSET_MS = "minOffsetMs"
+            private const val PROP_BUFFER_CONFIG_LIVE_TARGET_OFFSET_MS = "targetOffsetMs"
 
             @JvmStatic
             fun parse(src: ReadableMap?): Live {
@@ -54,16 +84,17 @@ class BufferConfig {
         val BufferConfigPropUnsetInt = -1
         val BufferConfigPropUnsetDouble = -1.0
 
-        private val PROP_BUFFER_CONFIG_CACHE_SIZE = "cacheSizeMB"
-        private val PROP_BUFFER_CONFIG_MIN_BUFFER_MS = "minBufferMs"
-        private val PROP_BUFFER_CONFIG_MAX_BUFFER_MS = "maxBufferMs"
-        private val PROP_BUFFER_CONFIG_BUFFER_FOR_PLAYBACK_MS = "bufferForPlaybackMs"
-        private val PROP_BUFFER_CONFIG_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = "bufferForPlaybackAfterRebufferMs"
-        private val PROP_BUFFER_CONFIG_MAX_HEAP_ALLOCATION_PERCENT = "maxHeapAllocationPercent"
-        private val PROP_BUFFER_CONFIG_MIN_BACK_BUFFER_MEMORY_RESERVE_PERCENT = "minBackBufferMemoryReservePercent"
-        private val PROP_BUFFER_CONFIG_MIN_BUFFER_MEMORY_RESERVE_PERCENT = "minBufferMemoryReservePercent"
-        private val PROP_BUFFER_CONFIG_BACK_BUFFER_DURATION_MS = "backBufferDurationMs"
-        private val PROP_BUFFER_CONFIG_LIVE = "live"
+        private const val PROP_BUFFER_CONFIG_CACHE_SIZE = "cacheSizeMB"
+        private const val PROP_BUFFER_CONFIG_MIN_BUFFER_MS = "minBufferMs"
+        private const val PROP_BUFFER_CONFIG_MAX_BUFFER_MS = "maxBufferMs"
+        private const val PROP_BUFFER_CONFIG_BUFFER_FOR_PLAYBACK_MS = "bufferForPlaybackMs"
+        private const val PROP_BUFFER_CONFIG_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = "bufferForPlaybackAfterRebufferMs"
+        private const val PROP_BUFFER_CONFIG_MAX_HEAP_ALLOCATION_PERCENT = "maxHeapAllocationPercent"
+        private const val PROP_BUFFER_CONFIG_MIN_BACK_BUFFER_MEMORY_RESERVE_PERCENT = "minBackBufferMemoryReservePercent"
+        private const val PROP_BUFFER_CONFIG_MIN_BUFFER_MEMORY_RESERVE_PERCENT = "minBufferMemoryReservePercent"
+        private const val PROP_BUFFER_CONFIG_BACK_BUFFER_DURATION_MS = "backBufferDurationMs"
+        private const val PROP_BUFFER_CONFIG_INITIAL_BITRATE = "initialBitrate"
+        private const val PROP_BUFFER_CONFIG_LIVE = "live"
 
         @JvmStatic
         fun parse(src: ReadableMap?): BufferConfig {
@@ -90,6 +121,7 @@ class BufferConfig {
                         BufferConfigPropUnsetDouble
                     )
                 bufferConfig.backBufferDurationMs = safeGetInt(src, PROP_BUFFER_CONFIG_BACK_BUFFER_DURATION_MS, BufferConfigPropUnsetInt)
+                bufferConfig.initialBitrate = safeGetInt(src, PROP_BUFFER_CONFIG_INITIAL_BITRATE, BufferConfigPropUnsetInt)
                 bufferConfig.live = Live.parse(src.getMap(PROP_BUFFER_CONFIG_LIVE))
             }
             return bufferConfig

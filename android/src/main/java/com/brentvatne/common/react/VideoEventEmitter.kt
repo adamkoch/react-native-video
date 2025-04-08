@@ -42,7 +42,8 @@ enum class EventTypes(val eventName: String) {
 
     EVENT_TEXT_TRACK_DATA_CHANGED("onTextTrackDataChanged"),
     EVENT_VIDEO_TRACKS("onVideoTracks"),
-    EVENT_ON_RECEIVE_AD_EVENT("onReceiveAdEvent");
+    EVENT_ON_RECEIVE_AD_EVENT("onReceiveAdEvent"),
+    EVENT_PICTURE_IN_PICTURE_STATUS_CHANGED("onPictureInPictureStatusChanged");
 
     companion object {
         fun toMap() =
@@ -64,11 +65,11 @@ class VideoEventEmitter {
         audioTracks: ArrayList<Track>,
         textTracks: ArrayList<Track>,
         videoTracks: ArrayList<VideoTrack>,
-        trackId: String
+        trackId: String?
     ) -> Unit
     lateinit var onVideoError: (errorString: String, exception: Exception, errorCode: String) -> Unit
     lateinit var onVideoProgress: (currentPosition: Long, bufferedDuration: Long, seekableDuration: Long, currentPlaybackTime: Double) -> Unit
-    lateinit var onVideoBandwidthUpdate: (bitRateEstimate: Long, height: Int, width: Int, trackId: String) -> Unit
+    lateinit var onVideoBandwidthUpdate: (bitRateEstimate: Long, height: Int, width: Int, trackId: String?) -> Unit
     lateinit var onVideoPlaybackStateChanged: (isPlaying: Boolean, isSeeking: Boolean) -> Unit
     lateinit var onVideoSeek: (currentPosition: Long, seekTime: Long) -> Unit
     lateinit var onVideoEnd: () -> Unit
@@ -90,6 +91,7 @@ class VideoEventEmitter {
     lateinit var onVideoTracks: (videoTracks: ArrayList<VideoTrack>?) -> Unit
     lateinit var onTextTrackDataChanged: (textTrackData: String) -> Unit
     lateinit var onReceiveAdEvent: (adEvent: String, adData: Map<String?, String?>?) -> Unit
+    lateinit var onPictureInPictureStatusChanged: (isActive: Boolean) -> Unit
 
     fun addEventEmitters(reactContext: ThemedReactContext, view: ReactExoplayerView) {
         val dispatcher = UIManagerHelper.getEventDispatcherForReactTag(reactContext, view.id)
@@ -108,7 +110,7 @@ class VideoEventEmitter {
 
                     val naturalSize: WritableMap = aspectRatioToNaturalSize(videoWidth, videoHeight)
                     putMap("naturalSize", naturalSize)
-                    putString("trackId", trackId)
+                    trackId?.let { putString("trackId", it) }
                     putArray("videoTracks", videoTracksToArray(videoTracks))
                     putArray("audioTracks", audioTracksToArray(audioTracks))
                     putArray("textTracks", textTracksToArray(textTracks))
@@ -153,9 +155,13 @@ class VideoEventEmitter {
             onVideoBandwidthUpdate = { bitRateEstimate, height, width, trackId ->
                 event.dispatch(EventTypes.EVENT_BANDWIDTH) {
                     putDouble("bitrate", bitRateEstimate.toDouble())
-                    putInt("width", width)
-                    putInt("height", height)
-                    putString("trackId", trackId)
+                    if (width > 0) {
+                        putInt("width", width)
+                    }
+                    if (height > 0) {
+                        putInt("height", height)
+                    }
+                    trackId?.let { putString("trackId", it) }
                 }
             }
             onVideoPlaybackStateChanged = { isPlaying, isSeeking ->
@@ -209,7 +215,7 @@ class VideoEventEmitter {
                     putArray(
                         "metadata",
                         Arguments.createArray().apply {
-                            metadataArrayList.forEachIndexed { i, metadata ->
+                            metadataArrayList.forEachIndexed { _, metadata ->
                                 pushMap(
                                     Arguments.createMap().apply {
                                         putString("identifier", metadata.identifier)
@@ -274,6 +280,11 @@ class VideoEventEmitter {
                     )
                 }
             }
+            onPictureInPictureStatusChanged = { isActive ->
+                event.dispatch(EventTypes.EVENT_PICTURE_IN_PICTURE_STATUS_CHANGED) {
+                    putBoolean("isActive", isActive)
+                }
+            }
         }
     }
 
@@ -303,7 +314,7 @@ class VideoEventEmitter {
 
     private fun videoTracksToArray(videoTracks: java.util.ArrayList<VideoTrack>?): WritableArray =
         Arguments.createArray().apply {
-            videoTracks?.forEachIndexed { i, vTrack ->
+            videoTracks?.forEachIndexed { _, vTrack ->
                 pushMap(
                     Arguments.createMap().apply {
                         putInt("width", vTrack.width)
@@ -336,15 +347,19 @@ class VideoEventEmitter {
 
     private fun aspectRatioToNaturalSize(videoWidth: Int, videoHeight: Int): WritableMap =
         Arguments.createMap().apply {
-            putInt("width", videoWidth)
-            putInt("height", videoHeight)
-            val orientation = if (videoWidth > videoHeight) {
-                "landscape"
-            } else if (videoWidth < videoHeight) {
-                "portrait"
-            } else {
-                "square"
+            if (videoWidth > 0) {
+                putInt("width", videoWidth)
             }
+            if (videoHeight > 0) {
+                putInt("height", videoHeight)
+            }
+
+            val orientation = when {
+                videoWidth > videoHeight -> "landscape"
+                videoWidth < videoHeight -> "portrait"
+                else -> "square"
+            }
+
             putString("orientation", orientation)
         }
 }

@@ -7,6 +7,7 @@ import type {
   ViewStyle,
   ImageRequireSource,
   ImageURISource,
+  ImageStyle,
 } from 'react-native';
 import type {ReactNode} from 'react';
 import type VideoResizeMode from './ResizeMode';
@@ -23,6 +24,7 @@ export type ReactVideoSourceProperties = {
   uri?: string;
   isNetwork?: boolean;
   isAsset?: boolean;
+  isLocalAssetFile?: boolean;
   shouldCache?: boolean;
   type?: string;
   mainVer?: number;
@@ -31,9 +33,15 @@ export type ReactVideoSourceProperties = {
   startPosition?: number;
   cropStart?: number;
   cropEnd?: number;
+  contentStartTime?: number; // Android
   metadata?: VideoMetadata;
   drm?: Drm;
+  cmcd?: Cmcd; // android
   textTracksAllowChunklessPreparation?: boolean;
+  textTracks?: TextTracks;
+  ad?: AdConfig;
+  minLoadRetryCount?: number; // Android
+  bufferConfig?: BufferConfig;
 };
 
 export type ReactVideoSource = Readonly<
@@ -69,6 +77,11 @@ export enum DRMType {
   FAIRPLAY = 'fairplay',
 }
 
+export type AdConfig = Readonly<{
+  adTagUrl?: string;
+  adLanguage?: ISO639_1;
+}>;
+
 export type Drm = Readonly<{
   type?: DRMType;
   licenseServer?: string;
@@ -77,6 +90,7 @@ export type Drm = Readonly<{
   certificateUrl?: string; // ios
   base64Certificate?: boolean; // ios default: false
   multiDrm?: boolean; // android
+  localSourceEncryptionKeyScheme?: string; // ios
   /* eslint-disable @typescript-eslint/no-unused-vars */
   getLicense?: (
     spcBase64: string,
@@ -86,6 +100,27 @@ export type Drm = Readonly<{
   ) => string | Promise<string>; // ios
   /* eslint-enable @typescript-eslint/no-unused-vars */
 }>;
+
+export enum CmcdMode {
+  MODE_REQUEST_HEADER = 0,
+  MODE_QUERY_PARAMETER = 1,
+}
+/**
+ * Custom key names MUST carry a hyphenated prefix to ensure that there will not be a
+ * namespace collision with future revisions to this specification. Clients SHOULD
+ * use a reverse-DNS syntax when defining their own prefix.
+ *
+ * @see https://cdn.cta.tech/cta/media/media/resources/standards/pdfs/cta-5004-final.pdf CTA-5004 Specification (Page 6, Section 3.1)
+ */
+export type CmcdData = Record<`${string}-${string}`, string | number>;
+export type CmcdConfiguration = Readonly<{
+  mode?: CmcdMode; // default: MODE_QUERY_PARAMETER
+  request?: CmcdData;
+  session?: CmcdData;
+  object?: CmcdData;
+  status?: CmcdData;
+}>;
+export type Cmcd = boolean | CmcdConfiguration;
 
 export enum BufferingStrategyType {
   DEFAULT = 'Default',
@@ -110,6 +145,7 @@ export type BufferConfig = {
   maxHeapAllocationPercent?: number;
   minBackBufferMemoryReservePercent?: number;
   minBufferMemoryReservePercent?: number;
+  initialBitrate?: number; // Android
   cacheSizeMB?: number;
   live?: BufferConfigLive;
 };
@@ -146,6 +182,7 @@ export type SubtitleStyle = {
   paddingLeft?: number;
   paddingRight?: number;
   opacity?: number;
+  subtitlesFollowVideo?: boolean;
 };
 
 export enum TextTrackType {
@@ -223,20 +260,43 @@ export type AudioOutput = 'speaker' | 'earpiece';
 
 export type ControlsStyles = {
   hideSeekBar?: boolean;
+  hideDuration?: boolean;
+  hidePosition?: boolean;
+  hidePlayPause?: boolean;
+  hideForward?: boolean;
+  hideRewind?: boolean;
+  hideNext?: boolean;
+  hidePrevious?: boolean;
+  hideFullscreen?: boolean;
+  hideNavigationBarOnFullScreenMode?: boolean;
+  hideNotificationBarOnFullScreenMode?: boolean;
+  hideSettingButton?: boolean;
   seekIncrementMS?: number;
+  liveLabel?: string;
 };
+
+export interface ReactVideoRenderLoaderProps {
+  source?: ReactVideoSource;
+  style?: StyleProp<ImageStyle>;
+  resizeMode?: EnumValues<VideoResizeMode>;
+}
 
 export interface ReactVideoProps extends ReactVideoEvents, ViewProps {
   source?: ReactVideoSource;
-  /** @deprecated */
+  /** @deprecated Use source.drm */
   drm?: Drm;
   style?: StyleProp<ViewStyle>;
+  /** @deprecated Use source.ad.adTagUrl */
   adTagUrl?: string;
+  /** @deprecated Use source.ad.adLanguage */
+  adLanguage?: ISO639_1;
   audioOutput?: AudioOutput; // Mobile
   automaticallyWaitsToMinimizeStalling?: boolean; // iOS
+  /** @deprecated Use source.bufferConfig */
   bufferConfig?: BufferConfig; // Android
   bufferingStrategy?: BufferingStrategyType;
   chapters?: Chapters[]; // iOS
+  /** @deprecated Use source.contentStartTime */
   contentStartTime?: number; // Android
   controls?: boolean;
   currentPlaybackTime?: number; // Android
@@ -250,12 +310,13 @@ export interface ReactVideoProps extends ReactVideoEvents, ViewProps {
   fullscreenOrientation?: EnumValues<FullscreenOrientationType>; // iOS
   hideShutterView?: boolean; //	Android
   ignoreSilentSwitch?: EnumValues<IgnoreSilentSwitchType>; // iOS
+  /** @deprecated Use source.minLoadRetryCount */
   minLoadRetryCount?: number; // Android
   maxBitRate?: number;
   mixWithOthers?: EnumValues<MixWithOthersType>; // iOS
   muted?: boolean;
   paused?: boolean;
-  pictureInPicture?: boolean; // iOS
+  enterPictureInPictureOnLeave?: boolean;
   playInBackground?: boolean;
   playWhenInactive?: boolean; // iOS
   poster?: string | ReactVideoPoster; // string is deprecated
@@ -265,7 +326,7 @@ export interface ReactVideoProps extends ReactVideoEvents, ViewProps {
   preventsDisplaySleepDuringVideoPlayback?: boolean;
   progressUpdateInterval?: number;
   rate?: number;
-  renderLoader?: ReactNode;
+  renderLoader?: ReactNode | ((arg0: ReactVideoRenderLoaderProps) => ReactNode);
   repeat?: boolean;
   reportBandwidth?: boolean; //Android
   resizeMode?: EnumValues<VideoResizeMode>;
@@ -275,16 +336,19 @@ export interface ReactVideoProps extends ReactVideoEvents, ViewProps {
   selectedVideoTrack?: SelectedVideoTrack; // android
   subtitleStyle?: SubtitleStyle; // android
   shutterColor?: string; // Android
+  /** @deprecated Use source.textTracks */
   textTracks?: TextTracks;
   testID?: string;
   viewType?: ViewType;
-  /** @deprecated */
+  /** @deprecated Use viewType */
   useTextureView?: boolean; // Android
-  /** @deprecated */
+  /** @deprecated Use viewType*/
   useSecureView?: boolean; // Android
   volume?: number;
+  /** @deprecated use **localSourceEncryptionKeyScheme** key in **drm** props instead */
   localSourceEncryptionKeyScheme?: string;
   debug?: DebugConfig;
   allowsExternalPlayback?: boolean; // iOS
   controlsStyles?: ControlsStyles; // Android
+  disableAudioSessionManagement?: boolean; // iOS
 }

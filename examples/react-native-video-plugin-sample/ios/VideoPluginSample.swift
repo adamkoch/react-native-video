@@ -3,7 +3,7 @@ import AVFoundation
 import AVKit
 
 @objc(VideoPluginSample)
-class VideoPluginSample: NSObject, RNVPlugin {
+class VideoPluginSample: RNVAVPlayerPlugin {
     private var _playerRateChangeObserver: NSKeyValueObservation?
     private var _playerCurrentItemChangeObserver: NSKeyValueObservation?
     private var _playerItemStatusObserver: NSKeyValueObservation?
@@ -16,6 +16,10 @@ class VideoPluginSample: NSObject, RNVPlugin {
         ReactNativeVideoManager.shared.registerPlugin(plugin: self)
     }
     
+    deinit {
+        ReactNativeVideoManager.shared.unregisterPlugin(plugin: self)
+    }
+    
     
     @objc(withResolver:withRejecter:)
     func setMetadata(resolve:RCTPromiseResolveBlock,reject:RCTPromiseRejectBlock) -> Void {
@@ -25,30 +29,23 @@ class VideoPluginSample: NSObject, RNVPlugin {
     /*
      * Handlers called on player creation and destructon
      */
-    func onInstanceCreated(id: String, player: Any) {
-        if player is AVPlayer {
-            let avPlayer = player as! AVPlayer
-            NSLog("plug onInstanceCreated")
-            _playerRateChangeObserver = avPlayer.observe(\.rate, options: [.old], changeHandler: handlePlaybackRateChange)
-            _playerCurrentItemChangeObserver = avPlayer.observe(\.currentItem, options: [.old], changeHandler: handleCurrentItemChange)
-
-        }
+    override func onInstanceCreated(id: String, player: AVPlayer) {
+        NSLog("plug onInstanceCreated")
+        _playerRateChangeObserver = player.observe(\.rate, options: [.old], changeHandler: handlePlaybackRateChange)
+        _playerCurrentItemChangeObserver = player.observe(\.currentItem, options: [.old], changeHandler: handleCurrentItemChange)
     }
 
-    func onInstanceRemoved(id: String, player: Any) {
-        if player is AVPlayer {
-            let avPlayer = player as! AVPlayer
-            NSLog("plug onInstanceRemoved")
-            _playerRateChangeObserver?.invalidate()
-            _playerCurrentItemChangeObserver?.invalidate()
-        }
+    override func onInstanceRemoved(id: String, player: AVPlayer) {
+        NSLog("plug onInstanceRemoved")
+        _playerRateChangeObserver?.invalidate()
+        _playerCurrentItemChangeObserver?.invalidate()
     }
     
     /**
      * custom functions to be able to track AVPlayer state change
      */
     func handlePlaybackRateChange(player: AVPlayer, change: NSKeyValueObservedChange<Float>) {
-        NSLog("plugin: handlePlaybackRateChange \(change.oldValue)")
+        NSLog("plugin: handlePlaybackRateChange \(String(describing: change.oldValue))")
     }
 
     func handlePlayerItemStatusChange(playerItem: AVPlayerItem, change _: NSKeyValueObservedChange<AVPlayerItem.Status>) {
@@ -56,7 +53,7 @@ class VideoPluginSample: NSObject, RNVPlugin {
     }
 
     func handleCurrentItemChange(player: AVPlayer, change: NSKeyValueObservedChange<AVPlayerItem?>) {
-        NSLog("plugin: handleCurrentItemChange \(player.currentItem)")
+        NSLog("plugin: handleCurrentItemChange \(String(describing: player.currentItem))")
         guard let playerItem = player.currentItem else {
             _playerItemStatusObserver?.invalidate()
             return
