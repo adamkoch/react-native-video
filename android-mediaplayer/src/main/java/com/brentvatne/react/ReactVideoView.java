@@ -10,6 +10,7 @@ import android.media.TimedMetaData;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.WindowManager;
@@ -39,6 +40,11 @@ import java.util.HashMap;
 import java.util.Map;
 import java.lang.Math;
 import java.math.BigDecimal;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.annotation.Nullable;
 
@@ -52,6 +58,13 @@ public class ReactVideoView extends ScalableVideoView implements
     MediaPlayer.OnInfoListener,
     LifecycleEventListener,
     MediaController.MediaPlayerControl {
+
+    private static final String TAG = "ReactVideoView";
+    
+    // Background thread for MediaPlayer operations to prevent ANR
+    private static ExecutorService sCleanupExecutor = Executors.newCachedThreadPool();
+    private final AtomicBoolean mIsDetaching = new AtomicBoolean(false);
+    private final AtomicBoolean mIsDestroyed = new AtomicBoolean(false);
 
     public enum Events {
         EVENT_LOAD_START("onVideoLoadStart"),
@@ -158,7 +171,7 @@ public class ReactVideoView extends ScalableVideoView implements
             @Override
             public void run() {
 
-                if (mMediaPlayerValid && !isCompleted && !mPaused && !mBackgroundPaused) {
+                if (mMediaPlayerValid && !isCompleted && !mPaused && !mBackgroundPaused && !mIsDestroyed.get()) {
                     WritableMap event = Arguments.createMap();
                     event.putDouble(EVENT_PROP_CURRENT_TIME, mMediaPlayer.getCurrentPosition() / 1000.0);
                     event.putDouble(EVENT_PROP_PLAYABLE_DURATION, mVideoBufferedDuration / 1000.0); //TODO:mBufferUpdateRunnable
@@ -231,15 +244,79 @@ public class ReactVideoView extends ScalableVideoView implements
     }
 
     public void cleanupMediaPlayerResources() {
+        Log.d(TAG, "Starting cleanup of MediaPlayer resources");
+
+        // Mark as destroyed to prevent new operations
+        mIsDestroyed.set(true);
+
         if ( mediaController != null ) {
             mediaController.hide();
+            mediaController = null;
         }
+
         if ( mMediaPlayer != null ) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                mMediaPlayer.setOnTimedMetaDataAvailableListener(null);
-            }
+            final MediaPlayer playerToCleanup = mMediaPlayer;
+            mMediaPlayer = null; // Clear reference immediately
             mMediaPlayerValid = false;
-            release();
+
+            sCleanupExecutor.submit(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        Log.d(TAG, "Cleaning up MediaPlayer on background thread");
+                        
+                        // Set all listeners to null first
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            playerToCleanup.setOnTimedMetaDataAvailableListener(null);
+                        }
+                        playerToCleanup.setOnVideoSizeChangedListener(null);
+                        playerToCleanup.setOnErrorListener(null);
+                        playerToCleanup.setOnPreparedListener(null);
+                        playerToCleanup.setOnBufferingUpdateListener(null);
+                        playerToCleanup.setOnSeekCompleteListener(null);
+                        playerToCleanup.setOnCompletionListener(null);
+                        playerToCleanup.setOnInfoListener(null);
+
+                        // Create a task with timeout for MediaPlayer operations
+                        Future<?> cleanupTask = sCleanupExecutor.submit(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    if (playerToCleanup.isPlaying()) {
+                                        playerToCleanup.stop();
+                                    }
+                                } catch (Exception e) {
+                                    Log.w(TAG, "Error stopping MediaPlayer: " + e.getMessage());
+                                }
+
+                                try {
+                                    playerToCleanup.reset();
+                                } catch (Exception e) {
+                                    Log.w(TAG, "Error resetting MediaPlayer: " + e.getMessage());
+                                }
+
+                                try {
+                                    playerToCleanup.release();
+                                } catch (Exception e) {
+                                    Log.w(TAG, "Error releasing MediaPlayer: " + e.getMessage());
+                                }
+                            }
+                        });
+
+                        // Wait maximum 2 seconds for cleanup
+                        try {
+                            cleanupTask.get(2, TimeUnit.SECONDS);
+                            Log.d(TAG, "MediaPlayer cleanup completed successfully");
+                        } catch (Exception e) {
+                            Log.w(TAG, "MediaPlayer cleanup timeout, forcing cancel: " + e.getMessage());
+                            cleanupTask.cancel(true);
+                        }
+
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error during MediaPlayer cleanup: " + e.getMessage());
+                    }
+                }
+            });
         }
         if (mIsFullscreen) {
             setFullscreen(false);
@@ -255,6 +332,10 @@ public class ReactVideoView extends ScalableVideoView implements
     }
 
     public void setSrc(final String uriString, final String type, final boolean isNetwork, final boolean isAsset, final ReadableMap requestHeaders, final int expansionMainVersion, final int expansionPatchVersion) {
+        if (mIsDestroyed.get()) {
+            Log.d(TAG, "Skipping setSrc - view is destroyed");
+            return;
+        }
 
         mSrcUriString = uriString;
         mSrcType = type;
@@ -264,13 +345,39 @@ public class ReactVideoView extends ScalableVideoView implements
         mMainVer = expansionMainVersion;
         mPatchVer = expansionPatchVersion;
 
-
         mMediaPlayerValid = false;
         mVideoDuration = 0;
         mVideoBufferedDuration = 0;
 
         initializeMediaPlayerIfNeeded();
-        mMediaPlayer.reset();
+        
+        // Perform reset on background thread to avoid ANR
+        sCleanupExecutor.submit(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (mMediaPlayer != null && !mIsDestroyed.get()) {
+                        mMediaPlayer.reset();
+                        
+                        // Continue with data source setup on UI thread
+                        new Handler(Looper.getMainLooper()).post(new Runnable() {
+                            @Override
+                            public void run() {
+                                setupDataSource(uriString, type, isNetwork, isAsset, requestHeaders, expansionMainVersion, expansionPatchVersion);
+                            }
+                        });
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Error resetting MediaPlayer in setSrc: " + e.getMessage());
+                }
+            }
+        });
+    }
+
+    private void setupDataSource(String uriString, String type, boolean isNetwork, boolean isAsset, ReadableMap requestHeaders, int expansionMainVersion, int expansionPatchVersion) {
+        if (mIsDestroyed.get()) {
+            return;
+        }
 
         try {
             if (isNetwork) {
@@ -293,10 +400,6 @@ public class ReactVideoView extends ScalableVideoView implements
                     headers.putAll(toStringMap(mRequestHeaders));
                 }
 
-                /* According to https://github.com/react-native-community/react-native-video/pull/537
-                 *   there is an issue with this where it can cause a IOException.
-                 * TODO: diagnose this exception and fix it
-                 */
                 setDataSource(mThemedReactContext, parsedUrl, headers);
             } else if (isAsset) {
                 if (uriString.startsWith("content://")) {
@@ -709,9 +812,69 @@ public class ReactVideoView extends ScalableVideoView implements
 
     @Override
     protected void onDetachedFromWindow() {
+        Log.d(TAG, "onDetachedFromWindow called");
+        
+        if (mIsDetaching.getAndSet(true)) {
+            Log.d(TAG, "Already detaching, skipping");
+            return;
+        }
+
         mMediaPlayerValid = false;
-        super.onDetachedFromWindow();
-        setKeepScreenOn(false);
+        
+        // Perform cleanup asynchronously to avoid blocking UI thread
+        sCleanupExecutor.submit(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    // First pause the video if it's playing
+                    if (mMediaPlayer != null && !mIsDestroyed.get()) {
+                        try {
+                            if (mMediaPlayer.isPlaying()) {
+                                mMediaPlayer.pause();
+                            }
+                        } catch (Exception e) {
+                            Log.w(TAG, "Error pausing MediaPlayer during detach: " + e.getMessage());
+                        }
+                    }
+
+                    // Small delay to allow pause to complete
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+
+                    // Now call the parent's onDetachedFromWindow on UI thread
+                    new Handler(Looper.getMainLooper()).post(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                ReactVideoView.super.onDetachedFromWindow();
+                                setKeepScreenOn(false);
+                            } catch (Exception e) {
+                                Log.w(TAG, "Error in super.onDetachedFromWindow: " + e.getMessage());
+                            }
+                        }
+                    });
+
+                } catch (Exception e) {
+                    Log.e(TAG, "Error during async onDetachedFromWindow: " + e.getMessage());
+                    
+                    // Fallback: call super on UI thread anyway
+                    new Handler(Looper.getMainLooper()).post(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                ReactVideoView.super.onDetachedFromWindow();
+                                setKeepScreenOn(false);
+                            } catch (Exception e) {
+                                Log.w(TAG, "Error in fallback super.onDetachedFromWindow: " + e.getMessage());
+                            }
+                        }
+                    });
+                }
+            }
+        });
     }
 
     @Override
