@@ -28,7 +28,9 @@ import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.LifecycleEventListener;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.uimanager.ThemedReactContext;
-import com.facebook.react.uimanager.events.RCTEventEmitter;
+import com.facebook.react.uimanager.UIManagerHelper;
+import com.facebook.react.uimanager.events.Event;
+import com.facebook.react.uimanager.events.EventDispatcher;
 import com.yqritc.scalablevideoview.ScalableType;
 import com.yqritc.scalablevideoview.ScaleManager;
 import com.yqritc.scalablevideoview.Size;
@@ -61,7 +63,6 @@ public class PooledVideoView extends FrameLayout implements
     private static final int MEDIA_ERROR_SYSTEM = -2147479543;
 
     private final ThemedReactContext mThemedReactContext;
-    private final RCTEventEmitter mEventEmitter;
     private final PooledPlayerPool mPool;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
 
@@ -136,7 +137,6 @@ public class PooledVideoView extends FrameLayout implements
     public PooledVideoView(ThemedReactContext themedReactContext) {
         super(themedReactContext);
         mThemedReactContext = themedReactContext;
-        mEventEmitter = themedReactContext.getJSModule(RCTEventEmitter.class);
         mPool = PooledPlayerPool.get(themedReactContext);
         themedReactContext.addLifecycleEventListener(this);
     }
@@ -685,7 +685,43 @@ public class PooledVideoView extends FrameLayout implements
         if (mDropped) {
             return;
         }
-        mEventEmitter.receiveEvent(getId(), event.toString(), payload);
+        // The event dispatcher, not getJSModule(RCTEventEmitter): on the new architecture that
+        // call logs an exception with a full stack trace on the main thread for every view.
+        EventDispatcher dispatcher =
+                UIManagerHelper.getEventDispatcherForReactTag(mThemedReactContext, getId());
+        if (dispatcher == null) {
+            return;
+        }
+        dispatcher.dispatchEvent(
+                new VideoEvent(
+                        UIManagerHelper.getSurfaceId(this), getId(), event.toString(), payload));
+    }
+
+    private static final class VideoEvent extends Event<VideoEvent> {
+        private final String mName;
+        private final WritableMap mPayload;
+
+        VideoEvent(int surfaceId, int viewTag, String name, WritableMap payload) {
+            super(surfaceId, viewTag);
+            mName = name;
+            mPayload = payload;
+        }
+
+        @Override
+        public String getEventName() {
+            return mName;
+        }
+
+        @Override
+        public boolean canCoalesce() {
+            // Every event is delivered, in order, as before.
+            return false;
+        }
+
+        @Override
+        protected WritableMap getEventData() {
+            return mPayload;
+        }
     }
 
     // ---- Host lifecycle ----
