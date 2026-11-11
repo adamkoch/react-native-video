@@ -82,8 +82,8 @@ public class PooledVideoView extends FrameLayout implements
     private boolean mDropped = false;
     /** onVideoLoad has been sent for the current source. */
     private boolean mLoaded = false;
-    /** The player has rendered a frame since the current source was loaded. */
-    private boolean mFrameRendered = false;
+    /** Tells the current source's first frame from one of the source before it. */
+    private final FirstFrameGate mFirstFrame = new FirstFrameGate();
     /** The current source's first frame is on the surface, so the texture may be shown. */
     private boolean mRevealed = false;
     /** The error was reported to JS; nothing more happens until the source changes. */
@@ -263,7 +263,7 @@ public class PooledVideoView extends FrameLayout implements
         mHandler.removeCallbacks(mRetryRunnable);
         mHandler.removeCallbacks(mProgressRunnable);
         mLoaded = false;
-        mFrameRendered = false;
+        final int firstFrameLoad = mFirstFrame.onLoad();
         mFailed = false;
         mRetryCount = 0;
         mSeekTimeMs = 0;
@@ -275,6 +275,11 @@ public class PooledVideoView extends FrameLayout implements
             player.setPlaybackParameters(new PlaybackParameters(mRate));
         }
         applyAudio();
+        // Goes through the playback thread and comes back here, ahead of the new source so
+        // that none of its frames can come back first; see FirstFrameGate.
+        player.createMessage((messageType, payload) -> mFirstFrame.onMarker(firstFrameLoad))
+                .setLooper(Looper.getMainLooper())
+                .send();
         player.setMediaItem(MediaItem.fromUri(mUri));
         player.prepare();
         applyPlayWhenReady();
@@ -484,19 +489,17 @@ public class PooledVideoView extends FrameLayout implements
         if (mSlot == null || mUri == null) {
             return;
         }
-        mFrameRendered = true;
+        mFirstFrame.onFirstFrame();
         revealIfFrameRendered();
     }
 
     /**
      * Shows the texture once the current source is ready and a frame of it has been rendered.
-     * Neither is enough alone. The player can be ready before the first frame is on the surface,
-     * which still holds the previous clip's last frame. And a first-frame event of the previous
-     * source can arrive after this one was loaded, while the ready state always belongs to the
-     * current source. A source with no video has nothing to wait for.
+     * The player can be ready before the first frame is on the surface, which still holds the
+     * previous clip's last frame. A source with no video has nothing to wait for.
      */
     private void revealIfFrameRendered() {
-        if (mLoaded && (mFrameRendered || mSlot.player.getVideoFormat() == null)) {
+        if (mLoaded && (mFirstFrame.frameRendered() || mSlot.player.getVideoFormat() == null)) {
             revealTexture();
         }
     }
