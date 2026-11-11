@@ -82,6 +82,8 @@ public class PooledVideoView extends FrameLayout implements
     private boolean mDropped = false;
     /** onVideoLoad has been sent for the current source. */
     private boolean mLoaded = false;
+    /** The player has rendered a frame since the current source was loaded. */
+    private boolean mFrameRendered = false;
     /** The current source's first frame is on the surface, so the texture may be shown. */
     private boolean mRevealed = false;
     /** The error was reported to JS; nothing more happens until the source changes. */
@@ -261,6 +263,7 @@ public class PooledVideoView extends FrameLayout implements
         mHandler.removeCallbacks(mRetryRunnable);
         mHandler.removeCallbacks(mProgressRunnable);
         mLoaded = false;
+        mFrameRendered = false;
         mFailed = false;
         mRetryCount = 0;
         mSeekTimeMs = 0;
@@ -468,13 +471,33 @@ public class PooledVideoView extends FrameLayout implements
                     mHandler.post(mProgressRunnable);
                 }
             }
-            // The video renderer is only ready once the first frame of this source is on the
-            // surface, so the previous clip's last frame can no longer be seen.
-            revealTexture();
+            revealIfFrameRendered();
         } else if (playbackState == Player.STATE_ENDED) {
             mHandler.removeCallbacks(mProgressRunnable);
             emit(Events.EVENT_END, null);
             setKeepScreenOn(false);
+        }
+    }
+
+    @Override
+    public void onRenderedFirstFrame() {
+        if (mSlot == null || mUri == null) {
+            return;
+        }
+        mFrameRendered = true;
+        revealIfFrameRendered();
+    }
+
+    /**
+     * Shows the texture once the current source is ready and a frame of it has been rendered.
+     * Neither is enough alone. The player can be ready before the first frame is on the surface,
+     * which still holds the previous clip's last frame. And a first-frame event of the previous
+     * source can arrive after this one was loaded, while the ready state always belongs to the
+     * current source. A source with no video has nothing to wait for.
+     */
+    private void revealIfFrameRendered() {
+        if (mLoaded && (mFrameRendered || mSlot.player.getVideoFormat() == null)) {
+            revealTexture();
         }
     }
 
