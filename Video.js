@@ -17,6 +17,48 @@ const styles = StyleSheet.create({
 const { VideoDecoderProperties } = NativeModules
 export { TextTrackType, FilterType, DRMType, VideoDecoderProperties }
 
+// Android only: which native view <Video> renders. 'mediaplayer' (RCTVideo) is the default;
+// 'pooled' (RCTVideoPooled) plays on pooled media3 players that are never released.
+const ANDROID_BACKENDS = ['mediaplayer', 'pooled'];
+let androidBackend = 'mediaplayer';
+let RCTVideoPooled = null;
+
+/**
+ * Chooses the Android backend for every <Video> mounted from now on. Call it once, at app
+ * start, before the first <Video> is rendered. Does nothing on other platforms.
+ * Returns the backend in effect, which stays 'mediaplayer' if the pooled view is not in the build.
+ */
+export function setAndroidBackend(backend) {
+  if (!ANDROID_BACKENDS.includes(backend)) {
+    throw new Error(`setAndroidBackend: unknown backend '${backend}', expected one of ${ANDROID_BACKENDS.join(', ')}`);
+  }
+  if (Platform.OS !== 'android') {
+    return androidBackend;
+  }
+  if (backend === 'pooled'
+    && UIManager.getViewManagerConfig
+    && !UIManager.getViewManagerConfig('RCTVideoPooled')) {
+    console.warn('react-native-video: RCTVideoPooled is not in this build, staying on the MediaPlayer backend');
+    backend = 'mediaplayer';
+  }
+  androidBackend = backend;
+  return androidBackend;
+}
+
+export function getAndroidBackend() {
+  return androidBackend;
+}
+
+function nativeVideoComponent() {
+  if (Platform.OS === 'android' && androidBackend === 'pooled') {
+    if (!RCTVideoPooled) {
+      RCTVideoPooled = requireNativeComponent('RCTVideoPooled');
+    }
+    return RCTVideoPooled;
+  }
+  return RCTVideo;
+}
+
 export default class Video extends Component {
 
   constructor(props) {
@@ -381,9 +423,15 @@ export default class Video extends Component {
       resizeMode: this.props.posterResizeMode || 'contain',
     };
 
+    // A mounted view keeps the backend it started with.
+    if (!this._NativeVideo) {
+      this._NativeVideo = nativeVideoComponent();
+    }
+    const NativeVideo = this._NativeVideo;
+
     return (
       <View style={nativeProps.style}>
-        <RCTVideo
+        <NativeVideo
           ref={this._assignRoot}
           {...nativeProps}
           style={StyleSheet.absoluteFill}

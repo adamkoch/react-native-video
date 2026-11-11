@@ -23,4 +23,8 @@ dependencies {
     //noinspection GradleDynamicVersion
     implementation "com.facebook.react:react-native:${safeExtGet('reactNativeVersion', '+')}"
     implementation 'com.github.thang2162:Android-ScalableVideoView:v1.1.1'
+    // Pooled backend (RCTVideoPooled): the player core only, no HLS/DASH/UI modules.
+    implementation "androidx.media3:media3-exoplayer:${safeExtGet('media3Version', '1.4.1')}"
+
+    testImplementation 'junit:junit:4.13.2'
 }

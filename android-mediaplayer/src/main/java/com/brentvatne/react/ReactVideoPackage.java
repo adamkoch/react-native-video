@@ -1,6 +1,7 @@
 package com.brentvatne.react;
 
 import android.app.Activity;
+import com.brentvatne.react.pooled.PooledVideoViewManager;
 import com.facebook.react.ReactPackage;
 import com.facebook.react.bridge.JavaScriptModule;
 import com.facebook.react.bridge.NativeModule;
@@ -25,6 +26,6 @@ public class ReactVideoPackage implements ReactPackage {
 
     @Override
     public List<ViewManager> createViewManagers(ReactApplicationContext reactContext) {
-        return Arrays.<ViewManager>asList(new ReactVideoViewManager());
+        return Arrays.<ViewManager>asList(new ReactVideoViewManager(), new PooledVideoViewManager());
     }
 }
