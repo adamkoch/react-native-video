@@ -1,6 +1,7 @@
 package com.brentvatne.react;
 
 import android.app.Activity;
+import com.brentvatne.react.pooled.PooledPlayersModule;
 import com.brentvatne.react.pooled.PooledVideoViewManager;
 import com.facebook.react.ReactPackage;
 import com.facebook.react.bridge.JavaScriptModule;
@@ -16,7 +17,8 @@ public class ReactVideoPackage implements ReactPackage {
 
     @Override
     public List<NativeModule> createNativeModules(ReactApplicationContext reactContext) {
-        return Collections.emptyList();
+        // Does nothing until JS calls it, which only happens on the pooled backend.
+        return Collections.<NativeModule>singletonList(new PooledPlayersModule(reactContext));
     }
 
     // Deprecated RN 0.47

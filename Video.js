@@ -49,6 +49,31 @@ export function getAndroidBackend() {
   return androidBackend;
 }
 
+/**
+ * Android pooled backend only: creates players ahead of the videos that will use them, until
+ * the pool has `count` of them or as many as the device has hardware decoders for. Call it
+ * when you know how many videos will be on screen at once, before they are, so that the
+ * players are not all created at the moment the videos appear. Players are never released,
+ * so calling it again with the same or a smaller count does nothing.
+ * Returns true if the request was passed on: false on other platforms, on the MediaPlayer
+ * backend, for a count below 1, and on a native build that cannot do it.
+ */
+export function prewarmAndroidPool(count) {
+  if (Platform.OS !== 'android' || androidBackend !== 'pooled') {
+    return false;
+  }
+  const players = Math.floor(Number(count));
+  if (!(players >= 1)) {
+    return false;
+  }
+  const pool = NativeModules.RCTVideoPooledPlayers;
+  if (!pool || typeof pool.prewarm !== 'function') {
+    return false;
+  }
+  pool.prewarm(players);
+  return true;
+}
+
 function nativeVideoComponent() {
   if (Platform.OS === 'android' && androidBackend === 'pooled') {
     if (!RCTVideoPooled) {
