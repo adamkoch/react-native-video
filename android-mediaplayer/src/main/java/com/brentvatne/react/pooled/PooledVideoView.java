@@ -275,13 +275,20 @@ public class PooledVideoView extends FrameLayout implements
             player.setPlaybackParameters(new PlaybackParameters(mRate));
         }
         applyAudio();
-        // Goes through the playback thread and comes back here, ahead of the new source so
-        // that none of its frames can come back first; see FirstFrameGate.
-        player.createMessage((messageType, payload) -> mFirstFrame.onMarker(firstFrameLoad))
-                .setLooper(Looper.getMainLooper())
-                .send();
-        player.setMediaItem(MediaItem.fromUri(mUri));
-        player.prepare();
+        // The playback thread must go from the previous source to the new one and on to the
+        // marker with nothing in between, or a frame could land on the wrong side of the
+        // marker. It waits until all three are queued; see FirstFrameGate.
+        PlaybackHold hold = new PlaybackHold();
+        player.createMessage((messageType, payload) -> hold.await()).send();
+        try {
+            player.setMediaItem(MediaItem.fromUri(mUri));
+            player.prepare();
+            player.createMessage((messageType, payload) -> mFirstFrame.onMarker(firstFrameLoad))
+                    .setLooper(Looper.getMainLooper())
+                    .send();
+        } finally {
+            hold.release();
+        }
         applyPlayWhenReady();
 
         WritableMap event = Arguments.createMap();

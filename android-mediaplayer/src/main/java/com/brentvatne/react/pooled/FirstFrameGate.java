@@ -4,13 +4,22 @@ package com.brentvatne.react.pooled;
  * Decides whether a rendered-first-frame event belongs to the source a pooled view loaded last.
  *
  * <p>The player sends that event from its playback thread, so one for the previous source can
- * still be on its way when the next source is loaded. Each load therefore sends a marker
- * through the playback thread and back, just ahead of the new source. Events come back in the
- * order the playback thread sent them, so a frame event that arrives before the marker is for
- * the previous source. The playback thread goes from the marker straight to the new source, so
- * a frame event that arrives after the marker is for the new one. The marker goes first, not
- * last, so that it can never overtake a frame of the new source: that would leave the video
- * hidden.
+ * still be on its way when the next source is loaded. The event does not say which source it
+ * is for, so each load sends a marker through the playback thread and back, and a frame event
+ * counts only once the marker has returned.
+ *
+ * <p>That is right only if the playback thread handles "replace the source", "prepare" and
+ * the marker one after the other, with nothing in between. {@link PooledVideoView} makes it
+ * so by holding the playback thread ({@link PlaybackHold}) until all three are queued. Then:
+ *
+ * <ul>
+ *   <li>The previous source can render only before the playback thread replaces it, which is
+ *       before it sends the marker. Events come back in the order they were sent, so every
+ *       frame event of the previous source arrives before the marker.
+ *   <li>The new source cannot render until its media has been prepared, and that needs work
+ *       the playback thread queues for itself behind the marker. So every frame event of the
+ *       new source arrives after the marker, and the video cannot stay hidden.
+ * </ul>
  *
  * <p>All methods are called on the main thread.
  */
