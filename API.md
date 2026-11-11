@@ -1852,3 +1852,30 @@ allprojects {
 ```
 If you encounter an error `Could not find com.android.support:support-annotations:27.0.0.` reinstall your Android Support Repository.
 
+
+## Android pooled backend (android-mediaplayer)
+
+The `android-mediaplayer` module contains two native views. `RCTVideo` (MediaPlayer) is the default. `RCTVideoPooled` plays on media3 players that are created on demand, kept in a process-wide pool and never released, so that mounting and unmounting videos does not create or destroy hardware decoders.
+
+Choose the backend once, at app start, before the first `<Video>` is rendered:
+
+```javascript
+import Video, { setAndroidBackend, getAndroidBackend } from 'react-native-video';
+
+setAndroidBackend('pooled'); // or 'mediaplayer', the default
+```
+
+`setAndroidBackend` returns the backend in effect. It does nothing on other platforms, and stays on `'mediaplayer'` (with a warning) if the pooled view is not in the build. A mounted `<Video>` keeps the backend it started with.
+
+The module needs `compileSdkVersion` 34 or higher for media3. The media3 version can be set with `rootProject.ext.media3Version` (default 1.4.1).
+
+How the pooled backend behaves:
+
+- **Decoders and pool size.** For H.264 the pool lists the device's non-secure hardware decoders in platform order and reads each one's `getMaxSupportedInstances()` (missing or zero counts as 1, more than 16 as 16). Each player reserves one decoder for the life of the process, filling the first decoder before the next, and tries that decoder first. The pool creates at most as many hardware players as the decoders report in total (never more than 16). If a player ends up on another decoder, this is logged and the accounting follows the decoder actually used.
+- **More videos than hardware players.** A view that finds no hardware player waits 300 ms for one to be given back, then gets one of up to 4 extra players that prefer the software decoder. Beyond that the view stays empty until a player is given back. No error event is sent and nothing crashes.
+- **Changing clips.** The player's surface is hidden until the new clip's first frame is on it, so the previous clip's last frame is never shown. `onReadyForDisplay` is sent when it is revealed.
+- **Audio.** A `muted` view plays with its audio track switched off and creates no audio decoder. An unmuted view plays sound at `volume`. There is no audio focus handling and no `stereoPan`.
+- **Errors.** A failed player is prepared again after 1 second, up to 3 times, before `onError` is sent. The event has the MediaPlayer shape, `{error: {what, extra}}`, with `extra` mapped to the nearest MediaPlayer code, plus `errorCode`, `errorCodeName` and `errorString` from media3.
+- **Background.** When the app goes to the background the players pause (unless `playInBackground`) but keep their decoders. They resume when the app returns.
+
+Supported props: `source` (`file://`, `content://`, `http(s)://` and bundled resource names; no request headers, no APK expansion files), `resizeMode`, `repeat`, `paused`, `muted`, `volume`, `rate`, `seek()`, `progressUpdateInterval`, `playInBackground`, `preventsDisplaySleepDuringVideoPlayback`. Events: `onLoadStart`, `onLoad`, `onReadyForDisplay`, `onProgress`, `onSeek`, `onEnd`, `onError`. Fullscreen, controls, timed metadata and the stalled/resume events are not implemented.

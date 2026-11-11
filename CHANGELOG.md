@@ -1,5 +1,8 @@
 ## Changelog
 
+### Next
+- Android (android-mediaplayer): optional pooled media3 backend, chosen at run time with `setAndroidBackend('pooled')`. The MediaPlayer backend stays the default. See "Android pooled backend" in API.md
+
 ### Version 6.0.0-alpha.7
 - All: clean JS warnings (https://github.com/react-native-video/react-native-video/pull/3183)
 - Android: Add shutterView color configurtion (https://github.com/react-native-video/react-native-video/pull/3179)
