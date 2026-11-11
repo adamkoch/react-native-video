@@ -6,6 +6,7 @@ import android.media.MediaCodecInfo.CodecCapabilities;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.Surface;
 
@@ -58,7 +59,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * <h3>How many players there are</h3>
  * <ul>
  *   <li>Hardware players: up to the total hardware capacity for {@link #PRIMARY_MIME_TYPE}
- *       (at most {@link #MAX_HARDWARE_PLAYERS}), created on demand.</li>
+ *       (at most {@link #MAX_HARDWARE_PLAYERS}), created on demand, or ahead of the demand
+ *       with {@link #prewarm}.</li>
  *   <li>Software players: a view that has waited {@link #OVERFLOW_GRACE_MS} for a hardware
  *       player gets one that prefers a software decoder, up to
  *       {@link #MAX_SOFTWARE_PLAYERS}. Software decoding of the small clips this backend is
@@ -91,6 +93,15 @@ public final class PooledPlayerPool {
 
     /** How long a view waits for a hardware player before it is given a software one. */
     public static final long OVERFLOW_GRACE_MS = 300;
+
+    /**
+     * The least time between two video starts; see {@link StartStagger}. Eight videos that
+     * appear together are all started within seven gaps.
+     */
+    public static final long START_GAP_MS = 60;
+
+    /** The pause between two players created by {@link #prewarm}. */
+    public static final long PREWARM_GAP_MS = 50;
 
     static final int CODEC_MAX_WIDTH = 1920;
     static final int CODEC_MAX_HEIGHT = 1088;
@@ -280,6 +291,36 @@ public final class PooledPlayerPool {
     private int mHardwarePlayers;
     private int mSoftwarePlayers;
     private boolean mOverflowScheduled;
+    private int mPrewarmTarget;
+    private boolean mPrewarmScheduled;
+
+    private final StartStagger mStarts = new StartStagger(new StartStagger.Scheduler() {
+        @Override
+        public long nowMs() {
+            return SystemClock.uptimeMillis();
+        }
+
+        @Override
+        public void postDelayed(Runnable runnable, long delayMs) {
+            mHandler.postDelayed(runnable, delayMs);
+        }
+    }, START_GAP_MS);
+
+    private final Runnable mPrewarmStep = new Runnable() {
+        @Override
+        public void run() {
+            mPrewarmScheduled = false;
+            if (mHardwarePlayers >= Math.min(mPrewarmTarget, hardwarePlayerCeiling())) {
+                return;
+            }
+            mFree.addLast(create(true));
+            if (!mWaiting.isEmpty()) {
+                serveWaiting(false);
+            }
+            mPrewarmScheduled = true;
+            mHandler.postDelayed(this, PREWARM_GAP_MS);
+        }
+    };
 
     private final Runnable mServeWaiting = new Runnable() {
         @Override
@@ -314,6 +355,28 @@ public final class PooledPlayerPool {
      */
     public static void setHardwarePlayerLimit(int limit) {
         sHardwarePlayerLimit = limit;
+    }
+
+    /** The order in which views start their videos, shared by every pooled view. */
+    StartStagger starts() {
+        return mStarts;
+    }
+
+    /**
+     * Creates players ahead of the views that will borrow them, until the pool has
+     * {@code count} hardware players or as many as the device allows, whichever is less.
+     * Creating a player is main-thread work, so they are created one per main-thread message
+     * with {@link #PREWARM_GAP_MS} in between, not all at once when a screen of videos
+     * appears. A view that asks for a player meanwhile gets one as before.
+     *
+     * Players are never released, so a count below the number that already exist does nothing.
+     */
+    public void prewarm(int count) {
+        mPrewarmTarget = Math.max(mPrewarmTarget, count);
+        if (!mPrewarmScheduled && mHardwarePlayers < Math.min(mPrewarmTarget, hardwarePlayerCeiling())) {
+            mPrewarmScheduled = true;
+            mHandler.post(mPrewarmStep);
+        }
     }
 
     /** How many hardware players (or, without hardware decoders, players) the pool may create. */

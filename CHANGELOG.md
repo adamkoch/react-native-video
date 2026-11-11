@@ -2,6 +2,7 @@
 
 ### Next
 - Android (android-mediaplayer): optional pooled media3 backend, chosen at run time with `setAndroidBackend('pooled')`. The MediaPlayer backend stays the default. See "Android pooled backend" in API.md
+- Android (android-mediaplayer) pooled backend: `prewarmAndroidPool(count)` creates players ahead of the videos; videos that appear together start 60 ms apart; a video fades in when its first frame is ready
 
 ### Version 6.0.0-alpha.7
 - All: clean JS warnings (https://github.com/react-native-video/react-native-video/pull/3183)

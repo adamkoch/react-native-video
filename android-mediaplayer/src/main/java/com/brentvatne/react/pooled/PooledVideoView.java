@@ -54,6 +54,9 @@ public class PooledVideoView extends FrameLayout implements
     /** In-place retries before the error is reported to JS. */
     static final int MAX_RETRIES = 3;
 
+    /** How long a video takes to fade in once its first frame is on the surface. */
+    static final long FADE_IN_MS = 180;
+
     // MediaPlayer's error vocabulary, which JS error handling already understands.
     private static final int MEDIA_ERROR_SYSTEM = -2147479543;
 
@@ -88,6 +91,12 @@ public class PooledVideoView extends FrameLayout implements
     private boolean mRevealed = false;
     /** The error was reported to JS; nothing more happens until the source changes. */
     private boolean mFailed = false;
+    /**
+     * The current source is waiting for its turn to start (see {@link StartStagger}). Until
+     * then the player, if the view has one, still holds the source before it, so its events
+     * are not for the current source.
+     */
+    private boolean mStartPending = false;
     private int mRetryCount = 0;
     private long mSeekTimeMs = 0;
 
@@ -111,9 +120,16 @@ public class PooledVideoView extends FrameLayout implements
     private final Runnable mRetryRunnable = new Runnable() {
         @Override
         public void run() {
-            if (mSlot != null && !mFailed && !mDropped && mUri != null) {
+            if (mSlot != null && !mFailed && !mDropped && mUri != null && !mStartPending) {
                 mSlot.player.prepare();
             }
+        }
+    };
+
+    private final Runnable mStartRunnable = new Runnable() {
+        @Override
+        public void run() {
+            start();
         }
     };
 
@@ -142,6 +158,8 @@ public class PooledVideoView extends FrameLayout implements
         mSrcForEvent = srcForEvent;
         if (uri == null) {
             // Nothing to play. Keep the player if there is one, paused and hidden.
+            mPool.starts().cancel(this);
+            mStartPending = false;
             mLoaded = false;
             hideTexture();
             if (mSlot != null) {
@@ -150,14 +168,41 @@ public class PooledVideoView extends FrameLayout implements
             }
             return;
         }
+        requestStart();
+    }
+
+    /**
+     * Queues the current source to start on this view's turn. The view shows nothing from now
+     * on: what its player holds is the source before.
+     */
+    private void requestStart() {
+        mStartPending = true;
+        mLoaded = false;
+        hideTexture();
+        mHandler.removeCallbacks(mRetryRunnable);
+        mHandler.removeCallbacks(mProgressRunnable);
         if (mSlot != null) {
-            load();
-        } else {
-            PooledPlayerPool.Slot slot = mPool.borrow(this);
-            if (slot != null) {
-                adopt(slot);
-            }
+            mSlot.player.setPlayWhenReady(false);
         }
+        // Runs inside this call when no other video has started within the gap.
+        mPool.starts().request(this, mStartRunnable);
+    }
+
+    /** This view's turn: borrow a player if it has none, and load the current source. */
+    private void start() {
+        mStartPending = false;
+        if (mDropped || mUri == null) {
+            return;
+        }
+        if (mSlot == null) {
+            PooledPlayerPool.Slot slot = mPool.borrow(this);
+            if (slot == null) {
+                // Queued; onPlayerAvailable asks for a new turn.
+                return;
+            }
+            adopt(slot);
+        }
+        load();
     }
 
     public void setResizeModeModifier(ScalableType resizeMode) {
@@ -208,7 +253,7 @@ public class PooledVideoView extends FrameLayout implements
     }
 
     public void seekTo(long positionMs) {
-        if (mSlot == null || mUri == null) {
+        if (mSlot == null || mUri == null || mStartPending) {
             return;
         }
         mSeekTimeMs = positionMs;
@@ -224,15 +269,16 @@ public class PooledVideoView extends FrameLayout implements
             return;
         }
         adopt(slot);
+        if (mUri != null) {
+            // Several waiting views can be given players in the same pass.
+            requestStart();
+        }
     }
 
     private void adopt(PooledPlayerPool.Slot slot) {
         mSlot = slot;
         slot.player.addListener(this);
         attachTexture();
-        if (mUri != null) {
-            load();
-        }
     }
 
     /** Called when React drops the view: the player goes back to the pool, still alive. */
@@ -243,6 +289,7 @@ public class PooledVideoView extends FrameLayout implements
         mDropped = true;
         mThemedReactContext.removeLifecycleEventListener(this);
         mHandler.removeCallbacksAndMessages(null);
+        mPool.starts().cancel(this);
         mPool.cancel(this);
         setKeepScreenOn(false);
         if (mSlot != null) {
@@ -301,7 +348,7 @@ public class PooledVideoView extends FrameLayout implements
     private void applyPlayWhenReady() {
         boolean play = !mPaused && !(mHostPaused && !mPlayInBackground);
         setKeepScreenOn(play && mPreventsDisplaySleepDuringVideoPlayback);
-        if (mSlot == null || mUri == null) {
+        if (mSlot == null || mUri == null || mStartPending) {
             return;
         }
         mSlot.player.setPlayWhenReady(play);
@@ -373,6 +420,7 @@ public class PooledVideoView extends FrameLayout implements
             // Removing the view makes it let go of the texture, so that another can adopt it.
             // The listener must still be set while that happens: it is what tells the
             // TextureView not to release the texture, which belongs to the pooled player.
+            textureView.animate().cancel();
             removeView(textureView);
             textureView.setSurfaceTextureListener(null);
         }
@@ -381,6 +429,7 @@ public class PooledVideoView extends FrameLayout implements
     private void hideTexture() {
         mRevealed = false;
         if (mTextureView != null) {
+            mTextureView.animate().cancel();
             mTextureView.setAlpha(0f);
         }
     }
@@ -392,7 +441,8 @@ public class PooledVideoView extends FrameLayout implements
         mRevealed = true;
         updateTransform();
         if (mTextureView != null) {
-            mTextureView.setAlpha(1f);
+            // Alpha only: nothing is laid out or redrawn by the app while it runs.
+            mTextureView.animate().alpha(1f).setDuration(FADE_IN_MS).start();
         }
         emit(Events.EVENT_READY_FOR_DISPLAY, Arguments.createMap());
     }
@@ -470,7 +520,7 @@ public class PooledVideoView extends FrameLayout implements
 
     @Override
     public void onPlaybackStateChanged(int playbackState) {
-        if (mSlot == null || mUri == null) {
+        if (mSlot == null || mUri == null || mStartPending) {
             return;
         }
         if (playbackState == Player.STATE_READY) {
@@ -493,7 +543,7 @@ public class PooledVideoView extends FrameLayout implements
 
     @Override
     public void onRenderedFirstFrame() {
-        if (mSlot == null || mUri == null) {
+        if (mSlot == null || mUri == null || mStartPending) {
             return;
         }
         mFirstFrame.onFirstFrame();
@@ -519,7 +569,7 @@ public class PooledVideoView extends FrameLayout implements
     @Override
     public void onPositionDiscontinuity(
             Player.PositionInfo oldPosition, Player.PositionInfo newPosition, int reason) {
-        if (reason == Player.DISCONTINUITY_REASON_SEEK && mLoaded) {
+        if (reason == Player.DISCONTINUITY_REASON_SEEK && mLoaded && !mStartPending) {
             WritableMap event = Arguments.createMap();
             event.putDouble(ReactVideoView.EVENT_PROP_CURRENT_TIME, newPosition.positionMs / 1000.0);
             event.putDouble(ReactVideoView.EVENT_PROP_SEEK_TIME, mSeekTimeMs / 1000.0);
@@ -529,7 +579,8 @@ public class PooledVideoView extends FrameLayout implements
 
     @Override
     public void onPlayerError(PlaybackException error) {
-        if (mSlot == null || mUri == null || mFailed) {
+        if (mSlot == null || mUri == null || mFailed || mStartPending) {
+            // A pending start prepares the player again, which clears the error.
             return;
         }
         Log.w(TAG, "player " + mSlot.index + " error " + error.getErrorCodeName() + " " + error.getMessage()
@@ -650,7 +701,7 @@ public class PooledVideoView extends FrameLayout implements
     @Override
     public void onHostResume() {
         mHostPaused = false;
-        if (mSlot != null && mUri != null && !mFailed
+        if (mSlot != null && mUri != null && !mFailed && !mStartPending
                 && mSlot.player.getPlaybackState() == Player.STATE_IDLE
                 && mSlot.player.getPlayerError() != null) {
             // The player failed while the app was in the background.
