@@ -14,6 +14,8 @@ import android.view.Surface;
 
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
+import androidx.media3.datasource.DefaultDataSource;
+import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.Renderer;
@@ -21,6 +23,8 @@ import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.mediacodec.MediaCodecInfo;
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
 import androidx.media3.exoplayer.mediacodec.MediaCodecUtil;
+import androidx.media3.exoplayer.source.MediaSource;
+import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer;
 import androidx.media3.exoplayer.video.VideoRendererEventListener;
 
@@ -131,6 +135,35 @@ public final class PooledPlayerPool {
         return sPlaybackThread.getLooper();
     }
 
+    /** How far ahead of the picture a player reads its source. */
+    static final int BUFFER_AHEAD_MS = 5000;
+    /** How much of a file a player reads before asking again whether it may read more. */
+    static final int READ_CHECK_BYTES = 128 * 1024;
+
+    /**
+     * By default a player reads 50 seconds ahead, and only asks whether it has read enough once
+     * per megabyte. A looping clip is queued again each time the copy before it has been read to
+     * the end, so a clip under a megabyte was queued up to a hundred times over, each copy with
+     * its own loader thread and its own copy of the file in memory: a grid of eight held about
+     * 400 MB and several hundred threads. Clips are short and nearly always local files, so a
+     * few seconds ahead is plenty.
+     */
+    static DefaultLoadControl loadControl() {
+        return new DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                        BUFFER_AHEAD_MS,
+                        BUFFER_AHEAD_MS,
+                        DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
+                        DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS)
+                .build();
+    }
+
+    /** The player's own source for a file or URL, asking sooner whether to keep reading. */
+    static MediaSource.Factory mediaSourceFactory(Context context) {
+        return new ProgressiveMediaSource.Factory(new DefaultDataSource.Factory(context))
+                .setContinueLoadingCheckIntervalBytes(READ_CHECK_BYTES);
+    }
+
     /** A player together with the decoder output surface it keeps for the whole process. */
     public static final class Slot {
         public final ExoPlayer player;
@@ -140,6 +173,8 @@ public final class PooledPlayerPool {
         final Surface surface;
         final int index;
         final ReservingSelector selector;
+        /** The video decoder the player last created, for error reports. Main thread. */
+        String decoder;
 
         Slot(Context context, int index, boolean hardware, Decoders decoders) {
             this.index = index;
@@ -156,6 +191,8 @@ public final class PooledPlayerPool {
             player = new ExoPlayer.Builder(context, new ReusableCodecRenderersFactory(context, selector))
                     .setLooper(Looper.getMainLooper())
                     .setPlaybackLooper(playbackLooper())
+                    .setLoadControl(loadControl())
+                    .setMediaSourceFactory(mediaSourceFactory(context))
                     .build();
             player.addAnalyticsListener(new AnalyticsListener() {
                 @Override
@@ -164,6 +201,11 @@ public final class PooledPlayerPool {
                         String decoderName,
                         long initializedTimestampMs,
                         long initializationDurationMs) {
+                    Slot.this.decoder = decoderName;
+                    if (PooledPlayerEvents.on()) {
+                        PooledPlayerEvents.event("decoder", 0,
+                                "player " + Slot.this.index + " " + decoderName + " in " + initializationDurationMs + "ms", null);
+                    }
                     selector.onDecoderInitialized(Slot.this.index, decoderName);
                 }
             });
@@ -191,10 +233,14 @@ public final class PooledPlayerPool {
                     }
                 } catch (MediaCodecUtil.DecoderQueryException e) {
                     Log.w(TAG, "cannot list decoders for " + mimeType, e);
+                    PooledPlayerEvents.event("decoders_unknown", 0, mimeType, null);
                 }
                 allocator = new DecoderAllocator(names, capacities);
                 mAllocators.put(mimeType, allocator);
                 Log.i(TAG, "hardware decoders for " + mimeType + ": " + allocator);
+                if (PooledPlayerEvents.on()) {
+                    PooledPlayerEvents.event("decoders", 0, mimeType + " " + allocator, null);
+                }
             }
             return allocator;
         }
@@ -296,6 +342,10 @@ public final class PooledPlayerPool {
             allocator.reportActual(reserved, decoderName);
             Log.w(TAG, "player " + playerIndex + " is on " + decoderName + " instead of its reserved "
                     + reserved + " for " + mimeType + "; now " + allocator);
+            if (PooledPlayerEvents.on()) {
+                PooledPlayerEvents.event("decoder_not_reserved", 0,
+                        "player " + playerIndex + " on " + decoderName + " reserved " + reserved, null);
+            }
         }
     }
 
@@ -482,6 +532,10 @@ public final class PooledPlayerPool {
             }
             if (slot == null) {
                 Log.w(TAG, "all " + mAll.size() + " players are in use, " + mWaiting.size() + " views waiting");
+                if (PooledPlayerEvents.on()) {
+                    PooledPlayerEvents.event("pool_full", 0,
+                            mAll.size() + " players in use, " + mWaiting.size() + " views waiting", null);
+                }
                 return;
             }
             mWaiting.pollFirst().onPlayerAvailable(slot);
@@ -511,6 +565,12 @@ public final class PooledPlayerPool {
                 ? " reserved " + slot.selector.reservationFor(PRIMARY_MIME_TYPE)
                         + " (" + mHardwarePlayers + "/" + hardwarePlayerCeiling() + " hardware)"
                 : " preferring software (" + mSoftwarePlayers + "/" + softwarePlayerCeiling() + ")"));
+        if (PooledPlayerEvents.on()) {
+            PooledPlayerEvents.event("player_created", 0, "player " + slot.index + (hardware
+                    ? " hardware " + slot.selector.reservationFor(PRIMARY_MIME_TYPE)
+                            + " " + mHardwarePlayers + "/" + hardwarePlayerCeiling()
+                    : " software " + mSoftwarePlayers + "/" + softwarePlayerCeiling()), null);
+        }
         return slot;
     }
 
