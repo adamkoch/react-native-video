@@ -74,6 +74,24 @@ export function prewarmAndroidPool(count) {
   return true;
 }
 
+export const DEFAULT_START_STAGGER_DELAY_MS = 300;
+
+/**
+ * The `startStagger` prop as the pooled view takes it: `{waitForFirstFrame, delayMs}` with
+ * the defaults filled in, or undefined for a video that starts at once.
+ */
+export function normalizeStartStagger(startStagger) {
+  if (!startStagger) {
+    return undefined;
+  }
+  const options = typeof startStagger === 'object' ? startStagger : {};
+  const delayMs = Number(options.delayMs);
+  return {
+    waitForFirstFrame: options.waitForFirstFrame !== false,
+    delayMs: options.delayMs != null && delayMs >= 0 ? delayMs : DEFAULT_START_STAGGER_DELAY_MS,
+  };
+}
+
 function nativeVideoComponent() {
   if (Platform.OS === 'android' && androidBackend === 'pooled') {
     if (!RCTVideoPooled) {
@@ -453,6 +471,12 @@ export default class Video extends Component {
       this._NativeVideo = nativeVideoComponent();
     }
     const NativeVideo = this._NativeVideo;
+    // Only the pooled view knows startStagger; the other views are never sent it.
+    if (RCTVideoPooled && NativeVideo === RCTVideoPooled) {
+      nativeProps.startStagger = normalizeStartStagger(nativeProps.startStagger);
+    } else {
+      delete nativeProps.startStagger;
+    }
 
     return (
       <View style={nativeProps.style}>
@@ -591,6 +615,13 @@ Video.propTypes = {
   fullscreenAutorotate: PropTypes.bool,
   fullscreenOrientation: PropTypes.oneOf(['all', 'landscape', 'portrait']),
   progressUpdateInterval: PropTypes.number,
+  startStagger: PropTypes.oneOfType([
+    PropTypes.bool,
+    PropTypes.shape({
+      waitForFirstFrame: PropTypes.bool,
+      delayMs: PropTypes.number,
+    }),
+  ]),
   subtitleStyle: PropTypes.shape({
     paddingTop: PropTypes.number,
     paddingBottom: PropTypes.number,

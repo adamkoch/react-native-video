@@ -95,10 +95,10 @@ public final class PooledPlayerPool {
     public static final long OVERFLOW_GRACE_MS = 300;
 
     /**
-     * The least time between two video starts; see {@link StartStagger}. Eight videos that
-     * appear together are all started within seven gaps.
+     * The longest a staggered start that shows no frame holds up the next one; see
+     * {@link StartStagger}.
      */
-    public static final long START_GAP_MS = 60;
+    public static final long START_MAX_WAIT_MS = 1500;
 
     /** The pause between two players created by {@link #prewarm}. */
     public static final long PREWARM_GAP_MS = 50;
@@ -304,7 +304,7 @@ public final class PooledPlayerPool {
         public void postDelayed(Runnable runnable, long delayMs) {
             mHandler.postDelayed(runnable, delayMs);
         }
-    }, START_GAP_MS);
+    }, START_MAX_WAIT_MS);
 
     private final Runnable mPrewarmStep = new Runnable() {
         @Override

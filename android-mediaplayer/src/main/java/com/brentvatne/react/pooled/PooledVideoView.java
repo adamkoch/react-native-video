@@ -98,6 +98,10 @@ public class PooledVideoView extends FrameLayout implements
      * are not for the current source.
      */
     private boolean mStartPending = false;
+    /** The source changed in the props being applied; the start is asked for after them. */
+    private boolean mStartAfterProps = false;
+    /** How this view's starts are spaced from other views'; null starts them at once. */
+    private StartStagger.Pacing mPacing;
     private int mRetryCount = 0;
     private long mSeekTimeMs = 0;
 
@@ -160,6 +164,7 @@ public class PooledVideoView extends FrameLayout implements
             // Nothing to play. Keep the player if there is one, paused and hidden.
             mPool.starts().cancel(this);
             mStartPending = false;
+            mStartAfterProps = false;
             mLoaded = false;
             hideTexture();
             if (mSlot != null) {
@@ -168,14 +173,38 @@ public class PooledVideoView extends FrameLayout implements
             }
             return;
         }
-        requestStart();
+        // The start is asked for once every prop of this update is in: startStagger may be
+        // applied after the source.
+        prepareForStart();
+        mStartAfterProps = true;
+    }
+
+    /** See {@link StartStagger.Pacing}; null starts this view's videos at once. */
+    public void setStartStagger(StartStagger.Pacing pacing) {
+        if (mDropped || (pacing == null ? mPacing == null : pacing.equals(mPacing))) {
+            return;
+        }
+        mPacing = pacing;
+        if (mStartPending && !mStartAfterProps && mPool.starts().isWaiting(this)) {
+            // Waiting for its turn under the old setting.
+            mPool.starts().request(this, mStartRunnable, mPacing);
+        }
+    }
+
+    /** Called by the view manager after each batch of props has been applied. */
+    public void onAfterProps() {
+        if (mStartAfterProps && !mDropped) {
+            mStartAfterProps = false;
+            // Runs inside this call unless the view is staggered and has to wait its turn.
+            mPool.starts().request(this, mStartRunnable, mPacing);
+        }
     }
 
     /**
-     * Queues the current source to start on this view's turn. The view shows nothing from now
-     * on: what its player holds is the source before.
+     * The current source is to start. The view shows nothing from now on: what its player
+     * holds is the source before.
      */
-    private void requestStart() {
+    private void prepareForStart() {
         mStartPending = true;
         mLoaded = false;
         hideTexture();
@@ -184,20 +213,28 @@ public class PooledVideoView extends FrameLayout implements
         if (mSlot != null) {
             mSlot.player.setPlayWhenReady(false);
         }
-        // Runs inside this call when no other video has started within the gap.
-        mPool.starts().request(this, mStartRunnable);
+    }
+
+    /** Queues the current source to start on this view's turn. */
+    private void requestStart() {
+        prepareForStart();
+        mStartAfterProps = false;
+        mPool.starts().request(this, mStartRunnable, mPacing);
     }
 
     /** This view's turn: borrow a player if it has none, and load the current source. */
     private void start() {
         mStartPending = false;
         if (mDropped || mUri == null) {
+            mPool.starts().cancel(this);
             return;
         }
         if (mSlot == null) {
             PooledPlayerPool.Slot slot = mPool.borrow(this);
             if (slot == null) {
-                // Queued; onPlayerAvailable asks for a new turn.
+                // Queued; onPlayerAvailable asks for a new turn. Nothing started, so the
+                // other views do not wait for this one.
+                mPool.starts().cancel(this);
                 return;
             }
             adopt(slot);
@@ -439,6 +476,7 @@ public class PooledVideoView extends FrameLayout implements
             return;
         }
         mRevealed = true;
+        mPool.starts().settled(this);
         updateTransform();
         if (mTextureView != null) {
             // Alpha only: nothing is laid out or redrawn by the app while it runs.
@@ -596,6 +634,7 @@ public class PooledVideoView extends FrameLayout implements
             return;
         }
         mFailed = true;
+        mPool.starts().settled(this);
         mHandler.removeCallbacks(mProgressRunnable);
         WritableMap errorMap = Arguments.createMap();
         errorMap.putInt(ReactVideoView.EVENT_PROP_WHAT, MediaPlayer.MEDIA_ERROR_UNKNOWN);

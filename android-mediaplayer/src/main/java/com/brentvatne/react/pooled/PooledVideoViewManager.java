@@ -24,6 +24,10 @@ public class PooledVideoViewManager extends SimpleViewManager<PooledVideoView> {
 
     public static final String REACT_CLASS = "RCTVideoPooled";
 
+    public static final String PROP_START_STAGGER = "startStagger";
+    public static final long DEFAULT_START_STAGGER_DELAY_MS = 300;
+    public static final long MAX_START_STAGGER_DELAY_MS = 10000;
+
     @Override
     public String getName() {
         return REACT_CLASS;
@@ -84,6 +88,31 @@ public class PooledVideoViewManager extends SimpleViewManager<PooledVideoView> {
         srcForEvent.putBoolean(ReactVideoViewManager.PROP_SRC_IS_NETWORK, isNetwork);
 
         videoView.setSrc(uri, isNetwork, isAsset, srcForEvent);
+    }
+
+    /**
+     * {@code {waitForFirstFrame, delayMs}} to start this view's videos in turn with the other
+     * staggered views; null or absent to start them at once. See {@link StartStagger}.
+     */
+    @ReactProp(name = PROP_START_STAGGER)
+    public void setStartStagger(final PooledVideoView videoView, @Nullable ReadableMap stagger) {
+        if (stagger == null) {
+            videoView.setStartStagger(null);
+            return;
+        }
+        boolean waitForFirstFrame = !stagger.hasKey("waitForFirstFrame")
+                || stagger.isNull("waitForFirstFrame")
+                || stagger.getBoolean("waitForFirstFrame");
+        double delayMs = stagger.hasKey("delayMs") && !stagger.isNull("delayMs")
+                ? stagger.getDouble("delayMs") : DEFAULT_START_STAGGER_DELAY_MS;
+        videoView.setStartStagger(new StartStagger.Pacing(
+                waitForFirstFrame, Math.round(Math.max(0, Math.min(delayMs, MAX_START_STAGGER_DELAY_MS)))));
+    }
+
+    @Override
+    protected void onAfterUpdateTransaction(PooledVideoView view) {
+        super.onAfterUpdateTransaction(view);
+        view.onAfterProps();
     }
 
     @ReactProp(name = ReactVideoViewManager.PROP_PREVENTS_DISPLAY_SLEEP_DURING_VIDEO_PLAYBACK, defaultBoolean = true)
