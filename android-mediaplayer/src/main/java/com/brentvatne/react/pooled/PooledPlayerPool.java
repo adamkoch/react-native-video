@@ -140,6 +140,8 @@ public final class PooledPlayerPool {
         final Surface surface;
         final int index;
         final ReservingSelector selector;
+        /** The video decoder the player last created, for error reports. Main thread. */
+        String decoder;
 
         Slot(Context context, int index, boolean hardware, Decoders decoders) {
             this.index = index;
@@ -164,6 +166,11 @@ public final class PooledPlayerPool {
                         String decoderName,
                         long initializedTimestampMs,
                         long initializationDurationMs) {
+                    Slot.this.decoder = decoderName;
+                    if (PooledPlayerEvents.on()) {
+                        PooledPlayerEvents.event("decoder", 0,
+                                "player " + Slot.this.index + " " + decoderName + " in " + initializationDurationMs + "ms", null);
+                    }
                     selector.onDecoderInitialized(Slot.this.index, decoderName);
                 }
             });
@@ -191,10 +198,14 @@ public final class PooledPlayerPool {
                     }
                 } catch (MediaCodecUtil.DecoderQueryException e) {
                     Log.w(TAG, "cannot list decoders for " + mimeType, e);
+                    PooledPlayerEvents.event("decoders_unknown", 0, mimeType, null);
                 }
                 allocator = new DecoderAllocator(names, capacities);
                 mAllocators.put(mimeType, allocator);
                 Log.i(TAG, "hardware decoders for " + mimeType + ": " + allocator);
+                if (PooledPlayerEvents.on()) {
+                    PooledPlayerEvents.event("decoders", 0, mimeType + " " + allocator, null);
+                }
             }
             return allocator;
         }
@@ -296,6 +307,10 @@ public final class PooledPlayerPool {
             allocator.reportActual(reserved, decoderName);
             Log.w(TAG, "player " + playerIndex + " is on " + decoderName + " instead of its reserved "
                     + reserved + " for " + mimeType + "; now " + allocator);
+            if (PooledPlayerEvents.on()) {
+                PooledPlayerEvents.event("decoder_not_reserved", 0,
+                        "player " + playerIndex + " on " + decoderName + " reserved " + reserved, null);
+            }
         }
     }
 
@@ -482,6 +497,10 @@ public final class PooledPlayerPool {
             }
             if (slot == null) {
                 Log.w(TAG, "all " + mAll.size() + " players are in use, " + mWaiting.size() + " views waiting");
+                if (PooledPlayerEvents.on()) {
+                    PooledPlayerEvents.event("pool_full", 0,
+                            mAll.size() + " players in use, " + mWaiting.size() + " views waiting", null);
+                }
                 return;
             }
             mWaiting.pollFirst().onPlayerAvailable(slot);
@@ -511,6 +530,12 @@ public final class PooledPlayerPool {
                 ? " reserved " + slot.selector.reservationFor(PRIMARY_MIME_TYPE)
                         + " (" + mHardwarePlayers + "/" + hardwarePlayerCeiling() + " hardware)"
                 : " preferring software (" + mSoftwarePlayers + "/" + softwarePlayerCeiling() + ")"));
+        if (PooledPlayerEvents.on()) {
+            PooledPlayerEvents.event("player_created", 0, "player " + slot.index + (hardware
+                    ? " hardware " + slot.selector.reservationFor(PRIMARY_MIME_TYPE)
+                            + " " + mHardwarePlayers + "/" + hardwarePlayerCeiling()
+                    : " software " + mSoftwarePlayers + "/" + softwarePlayerCeiling()), null);
+        }
         return slot;
     }
 

@@ -7,6 +7,7 @@ import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.TextureView;
 import android.view.View;
@@ -104,6 +105,10 @@ public class PooledVideoView extends FrameLayout implements
     private StartStagger.Pacing mPacing;
     private int mRetryCount = 0;
     private long mSeekTimeMs = 0;
+    /** The current source played to its end. */
+    private boolean mEnded = false;
+    /** When the current source was loaded, for {@link PooledPlayerEvents}. */
+    private long mLoadedAtMs = 0;
 
     private final Runnable mProgressRunnable = new Runnable() {
         @Override
@@ -171,12 +176,14 @@ public class PooledVideoView extends FrameLayout implements
                 mHandler.removeCallbacks(mRetryRunnable);
                 mSlot.player.setPlayWhenReady(false);
             }
+            reportExpectation();
             return;
         }
         // The start is asked for once every prop of this update is in: startStagger may be
         // applied after the source.
         prepareForStart();
         mStartAfterProps = true;
+        reportExpectation();
     }
 
     /** See {@link StartStagger.Pacing}; null starts this view's videos at once. */
@@ -207,6 +214,7 @@ public class PooledVideoView extends FrameLayout implements
     private void prepareForStart() {
         mStartPending = true;
         mLoaded = false;
+        mEnded = false;
         hideTexture();
         mHandler.removeCallbacks(mRetryRunnable);
         mHandler.removeCallbacks(mProgressRunnable);
@@ -235,6 +243,7 @@ public class PooledVideoView extends FrameLayout implements
                 // Queued; onPlayerAvailable asks for a new turn. Nothing started, so the
                 // other views do not wait for this one.
                 mPool.starts().cancel(this);
+                PooledPlayerEvents.event("waiting_for_player", System.identityHashCode(this), null, mSrcKey);
                 return;
             }
             adopt(slot);
@@ -257,6 +266,7 @@ public class PooledVideoView extends FrameLayout implements
     public void setPausedModifier(boolean paused) {
         mPaused = paused;
         applyPlayWhenReady();
+        reportExpectation();
     }
 
     public void setMutedModifier(boolean muted) {
@@ -274,6 +284,7 @@ public class PooledVideoView extends FrameLayout implements
         if (mSlot != null && rate > 0) {
             mSlot.player.setPlaybackParameters(new PlaybackParameters(rate));
         }
+        reportExpectation();
     }
 
     public void setProgressUpdateInterval(float progressUpdateInterval) {
@@ -282,6 +293,7 @@ public class PooledVideoView extends FrameLayout implements
 
     public void setPlayInBackground(boolean playInBackground) {
         mPlayInBackground = playInBackground;
+        reportExpectation();
     }
 
     public void setPreventsDisplaySleepDuringVideoPlaybackModifier(boolean prevents) {
@@ -329,6 +341,8 @@ public class PooledVideoView extends FrameLayout implements
         mPool.starts().cancel(this);
         mPool.cancel(this);
         setKeepScreenOn(false);
+        reportExpectation();
+        PooledPlayerEvents.event("dropped", System.identityHashCode(this), null, null);
         if (mSlot != null) {
             PooledPlayerPool.Slot slot = mSlot;
             mSlot = null;
@@ -349,8 +363,13 @@ public class PooledVideoView extends FrameLayout implements
         mLoaded = false;
         final int firstFrameLoad = mFirstFrame.onLoad();
         mFailed = false;
+        mEnded = false;
         mRetryCount = 0;
         mSeekTimeMs = 0;
+        mLoadedAtMs = SystemClock.elapsedRealtime();
+        if (PooledPlayerEvents.on()) {
+            PooledPlayerEvents.event("load", System.identityHashCode(this), "player " + mSlot.index, mSrcKey);
+        }
         // The player's surface still holds the last frame of whatever it played before.
         hideTexture();
 
@@ -380,6 +399,20 @@ public class PooledVideoView extends FrameLayout implements
             event.putMap(ReactVideoViewManager.PROP_SRC, mSrcForEvent.copy());
         }
         emit(Events.EVENT_LOAD_START, event);
+        reportExpectation();
+    }
+
+    /**
+     * Tells {@link PooledPlayerEvents} whether this view should be showing a moving picture.
+     * A view still waiting for a player counts: it should not wait for long.
+     */
+    private void reportExpectation() {
+        if (!PooledPlayerEvents.on()) {
+            return;
+        }
+        boolean expected = mUri != null && !mDropped && !mFailed && !mEnded && !mPaused
+                && !(mHostPaused && !mPlayInBackground) && mRate > 0 && isAttachedToWindow();
+        PooledPlayerEvents.expectFrames(System.identityHashCode(this), expected, mSrcKey, this);
     }
 
     private void applyPlayWhenReady() {
@@ -483,6 +516,10 @@ public class PooledVideoView extends FrameLayout implements
             mTextureView.animate().alpha(1f).setDuration(FADE_IN_MS).start();
         }
         emit(Events.EVENT_READY_FOR_DISPLAY, Arguments.createMap());
+        if (PooledPlayerEvents.on()) {
+            PooledPlayerEvents.event("first_frame", System.identityHashCode(this),
+                    "after " + (SystemClock.elapsedRealtime() - mLoadedAtMs) + "ms", mSrcKey);
+        }
     }
 
     /** React does not lay out children it did not create, so the texture is placed by hand. */
@@ -527,6 +564,7 @@ public class PooledVideoView extends FrameLayout implements
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         attachTexture();
+        reportExpectation();
     }
 
     @Override
@@ -534,6 +572,8 @@ public class PooledVideoView extends FrameLayout implements
         // A detached TextureView forgets its texture; a new one is made on the next attach.
         detachTexture();
         super.onDetachedFromWindow();
+        // Not on screen any more, whatever isAttachedToWindow() says during this call.
+        PooledPlayerEvents.expectFrames(System.identityHashCode(this), false, null, this);
     }
 
     @Override
@@ -552,6 +592,7 @@ public class PooledVideoView extends FrameLayout implements
 
     @Override
     public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+        PooledPlayerEvents.frame(System.identityHashCode(this));
     }
 
     // ---- Player events ----
@@ -561,11 +602,20 @@ public class PooledVideoView extends FrameLayout implements
         if (mSlot == null || mUri == null || mStartPending) {
             return;
         }
+        boolean ended = playbackState == Player.STATE_ENDED;
+        if (ended != mEnded) {
+            mEnded = ended;
+            reportExpectation();
+        }
         if (playbackState == Player.STATE_READY) {
             mRetryCount = 0;
             if (!mLoaded) {
                 mLoaded = true;
                 emitLoad();
+                if (PooledPlayerEvents.on()) {
+                    PooledPlayerEvents.event("ready", System.identityHashCode(this),
+                            "after " + (SystemClock.elapsedRealtime() - mLoadedAtMs) + "ms", mSrcKey);
+                }
                 if (mSlot.player.getPlayWhenReady()) {
                     mHandler.removeCallbacks(mProgressRunnable);
                     mHandler.post(mProgressRunnable);
@@ -575,6 +625,7 @@ public class PooledVideoView extends FrameLayout implements
         } else if (playbackState == Player.STATE_ENDED) {
             mHandler.removeCallbacks(mProgressRunnable);
             emit(Events.EVENT_END, null);
+            PooledPlayerEvents.event("ended", System.identityHashCode(this), null, mSrcKey);
             setKeepScreenOn(false);
         }
     }
@@ -623,8 +674,16 @@ public class PooledVideoView extends FrameLayout implements
         }
         Log.w(TAG, "player " + mSlot.index + " error " + error.getErrorCodeName() + " " + error.getMessage()
                 + " cause=" + error.getCause() + " retry=" + mRetryCount);
+        // No message: it can hold the file's path.
+        Throwable cause = error.getCause();
+        String what = error.getErrorCodeName()
+                + (cause == null ? "" : " " + cause.getClass().getSimpleName())
+                + " player " + mSlot.index + (mSlot.hardware ? "" : " software")
+                + " decoder " + mSlot.decoder;
         if (isWorthRetrying(error.errorCode) && mRetryCount < MAX_RETRIES) {
             mRetryCount++;
+            PooledPlayerEvents.event("error_retrying", System.identityHashCode(this),
+                    what + " retry " + mRetryCount + "/" + MAX_RETRIES, mSrcKey);
             if (!mHostPaused) {
                 mHandler.removeCallbacks(mRetryRunnable);
                 mHandler.postDelayed(mRetryRunnable, RETRY_DELAY_MS);
@@ -636,6 +695,8 @@ public class PooledVideoView extends FrameLayout implements
         mFailed = true;
         mPool.starts().settled(this);
         mHandler.removeCallbacks(mProgressRunnable);
+        reportExpectation();
+        PooledPlayerEvents.failed(System.identityHashCode(this), what + " after " + mRetryCount + " retries", mSrcKey);
         WritableMap errorMap = Arguments.createMap();
         errorMap.putInt(ReactVideoView.EVENT_PROP_WHAT, MediaPlayer.MEDIA_ERROR_UNKNOWN);
         errorMap.putInt(ReactVideoView.EVENT_PROP_EXTRA, mediaPlayerExtraFor(error.errorCode));
@@ -771,6 +832,7 @@ public class PooledVideoView extends FrameLayout implements
         // Pause only. The player keeps its decoder while the app is in the background, because
         // giving it up is the operation that can leak it.
         applyPlayWhenReady();
+        reportExpectation();
     }
 
     @Override
@@ -784,6 +846,7 @@ public class PooledVideoView extends FrameLayout implements
             mHandler.postDelayed(mRetryRunnable, RETRY_DELAY_MS);
         }
         applyPlayWhenReady();
+        reportExpectation();
     }
 
     @Override
