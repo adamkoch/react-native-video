@@ -24,7 +24,9 @@ dependencies {
     implementation "com.facebook.react:react-native:${safeExtGet('reactNativeVersion', '+')}"
     implementation 'com.github.thang2162:Android-ScalableVideoView:v1.1.1'
     // Pooled backend (RCTVideoPooled): the player core only, no HLS/DASH/UI modules.
-    implementation "androidx.media3:media3-exoplayer:${safeExtGet('media3Version', '1.4.1')}"
+    implementation "androidx.media3:media3-exoplayer:${safeExtGet('media3Version', '1.11.1')}"
+    // For the MP4 extractors the pooled player names directly.
+    implementation "androidx.media3:media3-extractor:${safeExtGet('media3Version', '1.11.1')}"
 
     testImplementation 'junit:junit:4.13.2'
 }
