@@ -5,7 +5,9 @@ import android.graphics.SurfaceTexture;
 import android.media.MediaCodecInfo.CodecCapabilities;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
+import android.os.Process;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.Surface;
@@ -112,6 +114,23 @@ public final class PooledPlayerPool {
         void onPlayerAvailable(Slot slot);
     }
 
+    private static HandlerThread sPlaybackThread;
+
+    /**
+     * One playback thread for every pooled player. By default each ExoPlayer starts its own, and a
+     * grid of eight then has eight threads waking independently many times a second; on a Chromecast
+     * that costs about twice the CPU of a single thread doing the same work, and the UI loses frames
+     * to it. The pool's players live for the whole process, so the thread is never stopped.
+     */
+    static synchronized Looper playbackLooper() {
+        if (sPlaybackThread == null) {
+            // The priority ExoPlayer gives its own playback thread.
+            sPlaybackThread = new HandlerThread("PooledPlayback", Process.THREAD_PRIORITY_AUDIO);
+            sPlaybackThread.start();
+        }
+        return sPlaybackThread.getLooper();
+    }
+
     /** A player together with the decoder output surface it keeps for the whole process. */
     public static final class Slot {
         public final ExoPlayer player;
@@ -136,6 +155,7 @@ public final class PooledPlayerPool {
             surface = new Surface(texture);
             player = new ExoPlayer.Builder(context, new ReusableCodecRenderersFactory(context, selector))
                     .setLooper(Looper.getMainLooper())
+                    .setPlaybackLooper(playbackLooper())
                     .build();
             player.addAnalyticsListener(new AnalyticsListener() {
                 @Override
