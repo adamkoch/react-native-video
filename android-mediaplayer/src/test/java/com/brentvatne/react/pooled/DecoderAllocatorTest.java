@@ -124,4 +124,24 @@ public class DecoderAllocatorTest {
         assertEquals(names, DecoderAllocator.withFirst(names, names, "not.in.the.list"));
         assertEquals(names, DecoderAllocator.withFirst(names, names, null));
     }
+
+    @Test
+    public void aReleasedInstanceIsReservedAgainFirst() {
+        DecoderAllocator allocator = new DecoderAllocator(Arrays.asList(A, B), Arrays.asList(4, 4));
+        for (int i = 0; i < 8; i++) {
+            allocator.reserve();
+        }
+        assertNull(allocator.reserve());
+        allocator.release(B);
+        assertEquals(3, allocator.used(B));
+        assertEquals(B, allocator.reserve());
+        assertNull(allocator.reserve());
+        // Names the allocator does not know, and a decoder with nothing reserved, change nothing.
+        allocator.release(null);
+        allocator.release("c2.android.avc.decoder");
+        assertEquals(8, allocator.used(A) + allocator.used(B));
+        DecoderAllocator empty = new DecoderAllocator(Arrays.asList(A), Arrays.asList(4));
+        empty.release(A);
+        assertEquals(0, empty.used(A));
+    }
 }

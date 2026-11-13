@@ -9,7 +9,8 @@ import java.util.List;
  * A device has a few hardware decoders for a MIME type, each with a limit on concurrent
  * instances, and creating one instance too many fails. Players are therefore given a decoder
  * when they are created: the first decoder in platform order is filled to its capacity, then the
- * next. Pooled players are never released, so a reservation lasts for the process.
+ * next. A reservation lasts as long as its player, which is normally the whole process; a
+ * player that is replaced gives its reservation back with {@link #release}.
  *
  * This class has no Android dependencies so that it can be tested on the JVM. It is thread-safe.
  */
@@ -68,6 +69,17 @@ public final class DecoderAllocator {
             }
         }
         return null;
+    }
+
+    /**
+     * Gives back an instance of a decoder, reserved or reported as actually used, because its
+     * player is gone. Does nothing for a null or unknown name.
+     */
+    public synchronized void release(String name) {
+        int i = indexOf(name);
+        if (i >= 0) {
+            mUsed[i] = Math.max(0, mUsed[i] - 1);
+        }
     }
 
     /**

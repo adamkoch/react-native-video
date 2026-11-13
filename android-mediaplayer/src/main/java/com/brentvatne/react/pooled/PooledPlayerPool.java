@@ -3,6 +3,7 @@ package com.brentvatne.react.pooled;
 import android.content.Context;
 import android.graphics.SurfaceTexture;
 import android.media.MediaCodecInfo.CodecCapabilities;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -27,6 +28,13 @@ import androidx.media3.exoplayer.source.MediaSource;
 import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer;
 import androidx.media3.exoplayer.video.VideoRendererEventListener;
+import androidx.media3.extractor.DefaultExtractorsFactory;
+import androidx.media3.extractor.Extractor;
+import androidx.media3.extractor.ExtractorsFactory;
+import androidx.media3.extractor.mp4.FragmentedMp4Extractor;
+import androidx.media3.extractor.mp4.Mp4Extractor;
+import androidx.media3.extractor.text.DefaultSubtitleParserFactory;
+import androidx.media3.extractor.text.SubtitleParser;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -35,9 +43,12 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Process-wide pool of ExoPlayers that are never released.
+ * Process-wide pool of ExoPlayers that are not released while they work.
  *
  * Some hardware decoder services (seen on MediaTek Google TV devices) occasionally fail to
  * destroy a decoder that the app released, and each failure permanently uses up one of a small
@@ -78,6 +89,13 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>A device with no hardware decoder for the MIME type gets
  *       {@link #PLAYERS_WITHOUT_HARDWARE} players in the default decoder order.</li>
  * </ul>
+ *
+ * <h3>The one time a player is released</h3>
+ * A decoder can stop putting out frames, with or without an error, and stay that way however
+ * often its player is prepared again. A view that sees this ({@link StallWatch}) has its player
+ * replaced with {@link #replace}: the old player, its codec and its surface are released and a
+ * new player takes its place. That is the release the pool otherwise avoids, so it is done
+ * only for a player that is no use as it is.
  *
  * Must be used from the main thread only, except where noted.
  */
@@ -158,10 +176,61 @@ public final class PooledPlayerPool {
                 .build();
     }
 
+    private static ExecutorService sLoaders;
+
+    /**
+     * The threads every pooled player reads its sources on. A looping clip is read again on each
+     * loop, and by default each read starts a thread of its own and ends it. These threads are
+     * kept for a minute after a read and reused. There is no limit on how many, because a read
+     * waits on its thread while its player has enough buffered, and must not hold up another's.
+     */
+    static synchronized ExecutorService loaders() {
+        if (sLoaders == null) {
+            AtomicInteger count = new AtomicInteger();
+            sLoaders = Executors.newCachedThreadPool(
+                    task -> new Thread(task, "PooledLoader:" + count.incrementAndGet()));
+        }
+        return sLoaders;
+    }
+
+    /**
+     * Clips are MP4 files. The default factory creates an extractor for every container format
+     * it knows on each read, which for a looping clip is each loop. A source whose name says MP4
+     * gets only the two MP4 extractors; any other source gets the default set.
+     */
+    static final class Mp4FirstExtractors implements ExtractorsFactory {
+        private final SubtitleParser.Factory subtitles = new DefaultSubtitleParserFactory();
+        private final DefaultExtractorsFactory all = new DefaultExtractorsFactory();
+
+        @Override
+        public Extractor[] createExtractors() {
+            return all.createExtractors();
+        }
+
+        @Override
+        public Extractor[] createExtractors(Uri uri, Map<String, List<String>> responseHeaders) {
+            if (!namesMp4(uri.getLastPathSegment())) {
+                return all.createExtractors(uri, responseHeaders);
+            }
+            return new Extractor[] {new Mp4Extractor(subtitles), new FragmentedMp4Extractor(subtitles)};
+        }
+
+        static boolean namesMp4(String name) {
+            if (name == null) {
+                return false;
+            }
+            String lower = name.toLowerCase(java.util.Locale.ROOT);
+            return lower.endsWith(".mp4") || lower.endsWith(".m4v") || lower.endsWith(".mov");
+        }
+    }
+
     /** The player's own source for a file or URL, asking sooner whether to keep reading. */
     static MediaSource.Factory mediaSourceFactory(Context context) {
-        return new ProgressiveMediaSource.Factory(new DefaultDataSource.Factory(context))
-                .setContinueLoadingCheckIntervalBytes(READ_CHECK_BYTES);
+        return new ProgressiveMediaSource.Factory(
+                        new DefaultDataSource.Factory(context), new Mp4FirstExtractors())
+                .setContinueLoadingCheckIntervalBytes(READ_CHECK_BYTES)
+                // Never shut down: the pool's players live for the whole process.
+                .setDownloadExecutor(PooledPlayerPool::loaders, executor -> { });
     }
 
     /** A player together with the decoder output surface it keeps for the whole process. */
@@ -212,6 +281,19 @@ public final class PooledPlayerPool {
             // Set once and never changed: a new surface would make the player reconfigure or
             // recreate its codec.
             player.setVideoSurface(surface);
+        }
+
+        /** Releases the player with its codec and surface. The slot is of no use afterwards. */
+        void retire() {
+            try {
+                // Waits for the playback thread, for half a second at most.
+                player.release();
+            } catch (RuntimeException e) {
+                Log.w(TAG, "player " + index + " did not release cleanly", e);
+            }
+            selector.release();
+            surface.release();
+            texture.release();
         }
     }
 
@@ -271,6 +353,8 @@ public final class PooledPlayerPool {
         /** MIME type to the decoder this player should use; NONE if there is none for it. */
         private final Map<String, String> mPreferred = new ConcurrentHashMap<>();
         private volatile String mLastVideoMimeType;
+        /** The player is gone; guarded by mPreferred. */
+        private boolean mReleased;
 
         ReservingSelector(Decoders decoders, boolean preferSoftware) {
             mDecoders = decoders;
@@ -281,11 +365,30 @@ public final class PooledPlayerPool {
         String reservationFor(String mimeType) {
             synchronized (mPreferred) {
                 String name = mPreferred.get(mimeType);
+                if (name == null && mReleased) {
+                    return null;
+                }
                 if (name == null) {
                     name = mPreferSoftware ? null : mDecoders.allocatorFor(mimeType).reserve();
                     mPreferred.put(mimeType, name == null ? NONE : name);
                 }
                 return name == null || name.equals(NONE) ? null : name;
+            }
+        }
+
+        /** The player is gone: its decoders are free for the player that replaces it. */
+        void release() {
+            synchronized (mPreferred) {
+                if (mReleased) {
+                    return;
+                }
+                mReleased = true;
+                for (Map.Entry<String, String> entry : mPreferred.entrySet()) {
+                    if (!NONE.equals(entry.getValue())) {
+                        mDecoders.allocatorFor(entry.getKey()).release(entry.getValue());
+                    }
+                }
+                mPreferred.clear();
             }
         }
 
@@ -323,6 +426,9 @@ public final class PooledPlayerPool {
             }
             String reserved;
             synchronized (mPreferred) {
+                if (mReleased) {
+                    return;
+                }
                 reserved = mPreferred.get(mimeType);
                 if (NONE.equals(reserved)) {
                     reserved = null;
@@ -439,7 +545,7 @@ public final class PooledPlayerPool {
      * with {@link #PREWARM_GAP_MS} in between, not all at once when a screen of videos
      * appears. A view that asks for a player meanwhile gets one as before.
      *
-     * Players are never released, so a count below the number that already exist does nothing.
+     * Players are not released for this, so a count below the number that already exist does nothing.
      */
     public void prewarm(int count) {
         mPrewarmTarget = Math.max(mPrewarmTarget, count);
@@ -511,6 +617,34 @@ public final class PooledPlayerPool {
             mHandler.removeCallbacks(mServeWaiting);
             mHandler.post(mServeWaiting);
         }
+    }
+
+    /**
+     * Releases a borrowed player that has stopped working and returns a new one of the same
+     * kind in its place, already the caller's. The caller must have removed its listeners and
+     * detached the texture from its TextureView, as for {@link #giveBack}.
+     *
+     * Releasing waits for the playback thread and creating a player is main-thread work, so
+     * this is for a player that is no use as it is, not for every error.
+     */
+    public Slot replace(Slot old) {
+        int at = mAll.indexOf(old);
+        mFree.remove(old);
+        // First, so that the new player can have the old one's decoder.
+        old.retire();
+        Slot fresh = new Slot(mContext, old.index, old.hardware, mDecoders);
+        if (at >= 0) {
+            mAll.set(at, fresh);
+        } else {
+            mAll.add(fresh);
+        }
+        Log.w(TAG, "replaced player " + old.index + (old.hardware
+                ? " reserved " + fresh.selector.reservationFor(PRIMARY_MIME_TYPE) : " preferring software"));
+        if (PooledPlayerEvents.on()) {
+            PooledPlayerEvents.event("player_replaced", 0, "player " + old.index + (old.hardware
+                    ? " hardware " + fresh.selector.reservationFor(PRIMARY_MIME_TYPE) : " software"), null);
+        }
+        return fresh;
     }
 
     private void serveWaiting(boolean allowSoftware) {
