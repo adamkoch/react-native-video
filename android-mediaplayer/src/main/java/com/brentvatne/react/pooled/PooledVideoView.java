@@ -20,6 +20,7 @@ import androidx.media3.common.PlaybackParameters;
 import androidx.media3.common.Player;
 import androidx.media3.common.TrackSelectionParameters;
 import androidx.media3.common.VideoSize;
+import androidx.media3.exoplayer.DecoderCounters;
 import androidx.media3.exoplayer.ExoPlayer;
 
 import com.brentvatne.react.ReactVideoView.Events;
@@ -42,6 +43,10 @@ import com.yqritc.scalablevideoview.Size;
  * The view owns nothing that decodes: it borrows a player when it gets a source, shows the
  * player's persistent SurfaceTexture in a TextureView, and gives the player back when React
  * drops the view. Events have the same names and payload shapes as the MediaPlayer view's.
+ *
+ * A player that reports an error is prepared again a few times. One that still fails, or that
+ * stops putting out frames without reporting anything, is replaced with a new player
+ * ({@link StallWatch}); when that does not help either, the error goes to JS.
  */
 @SuppressLint("ViewConstructor")
 public class PooledVideoView extends FrameLayout implements
@@ -109,6 +114,8 @@ public class PooledVideoView extends FrameLayout implements
     private boolean mEnded = false;
     /** When the current source was loaded, for {@link PooledPlayerEvents}. */
     private long mLoadedAtMs = 0;
+    /** Notices a player that has stopped putting out frames. */
+    private final StallWatch mStall = new StallWatch();
 
     private final Runnable mProgressRunnable = new Runnable() {
         @Override
@@ -132,6 +139,33 @@ public class PooledVideoView extends FrameLayout implements
         public void run() {
             if (mSlot != null && !mFailed && !mDropped && mUri != null && !mStartPending) {
                 mSlot.player.prepare();
+            }
+        }
+    };
+
+    /** Runs every {@link StallWatch#CHECK_MS} from the load of a source until it fails or goes. */
+    private final Runnable mStallCheck = new Runnable() {
+        @Override
+        public void run() {
+            if (mSlot == null || mUri == null || mFailed || mDropped || mStartPending) {
+                // load() starts the checks again.
+                return;
+            }
+            StallWatch.Verdict verdict =
+                    mStall.check(shouldBeDecoding(), framesDecoded(), SystemClock.elapsedRealtime());
+            if (verdict == StallWatch.Verdict.OK) {
+                mHandler.postDelayed(this, StallWatch.CHECK_MS);
+                return;
+            }
+            String what = "no frames for " + StallWatch.STALL_MS + "ms player " + mSlot.index
+                    + (mSlot.hardware ? "" : " software") + " decoder " + mSlot.decoder
+                    + " state " + mSlot.player.getPlaybackState();
+            Log.w(TAG, what);
+            if (verdict == StallWatch.Verdict.REPLACE) {
+                replacePlayer(what);
+            } else {
+                fail(what, PlaybackException.ERROR_CODE_TIMEOUT, MEDIA_ERROR_SYSTEM,
+                        "ERROR_CODE_TIMEOUT", "The video stopped and a new player did not start it");
             }
         }
     };
@@ -172,6 +206,7 @@ public class PooledVideoView extends FrameLayout implements
             mStartAfterProps = false;
             mLoaded = false;
             hideTexture();
+            mHandler.removeCallbacks(mStallCheck);
             if (mSlot != null) {
                 mHandler.removeCallbacks(mRetryRunnable);
                 mSlot.player.setPlayWhenReady(false);
@@ -179,6 +214,8 @@ public class PooledVideoView extends FrameLayout implements
             reportExpectation();
             return;
         }
+        // A new source, or a new try at one that failed, may have its player replaced again.
+        mStall.reset();
         // The start is asked for once every prop of this update is in: startStagger may be
         // applied after the source.
         prepareForStart();
@@ -218,6 +255,7 @@ public class PooledVideoView extends FrameLayout implements
         hideTexture();
         mHandler.removeCallbacks(mRetryRunnable);
         mHandler.removeCallbacks(mProgressRunnable);
+        mHandler.removeCallbacks(mStallCheck);
         if (mSlot != null) {
             mSlot.player.setPlayWhenReady(false);
         }
@@ -330,6 +368,21 @@ public class PooledVideoView extends FrameLayout implements
         attachTexture();
     }
 
+    /**
+     * The view's player is no use as it is: release it, and start the current source on a new
+     * one in its place, on this view's turn like any other start.
+     */
+    private void replacePlayer(String why) {
+        PooledPlayerPool.Slot old = mSlot;
+        PooledPlayerEvents.event("replacing_player", System.identityHashCode(this),
+                why + " replacement " + mStall.replacements() + "/" + StallWatch.MAX_REPLACEMENTS, mSrcKey);
+        mSlot = null;
+        old.player.removeListener(this);
+        detachTexture();
+        adopt(mPool.replace(old));
+        requestStart();
+    }
+
     /** Called when React drops the view: the player goes back to the pool, still alive. */
     public void drop() {
         if (mDropped) {
@@ -367,6 +420,9 @@ public class PooledVideoView extends FrameLayout implements
         mRetryCount = 0;
         mSeekTimeMs = 0;
         mLoadedAtMs = SystemClock.elapsedRealtime();
+        mStall.restart();
+        mHandler.removeCallbacks(mStallCheck);
+        mHandler.postDelayed(mStallCheck, StallWatch.CHECK_MS);
         if (PooledPlayerEvents.on()) {
             PooledPlayerEvents.event("load", System.identityHashCode(this), "player " + mSlot.index, mSrcKey);
         }
@@ -410,9 +466,41 @@ public class PooledVideoView extends FrameLayout implements
         if (!PooledPlayerEvents.on()) {
             return;
         }
-        boolean expected = mUri != null && !mDropped && !mFailed && !mEnded && !mPaused
+        PooledPlayerEvents.expectFrames(System.identityHashCode(this), shouldBePlaying(), mSrcKey, this);
+    }
+
+    /** The view should be showing a moving picture, whether or not it has a player yet. */
+    private boolean shouldBePlaying() {
+        return mUri != null && !mDropped && !mFailed && !mEnded && !mPaused
                 && !(mHostPaused && !mPlayInBackground) && mRate > 0 && isAttachedToWindow();
-        PooledPlayerEvents.expectFrames(System.identityHashCode(this), expected, mSrcKey, this);
+    }
+
+    /**
+     * The view's player should be putting out frames. Not while it waits for more of its source
+     * to be read, which for a network source can take any time and is not the decoder's doing,
+     * and not for a source that turned out to have no video.
+     */
+    private boolean shouldBeDecoding() {
+        if (!shouldBePlaying()) {
+            return false;
+        }
+        ExoPlayer player = mSlot.player;
+        if (player.getPlaybackState() == Player.STATE_BUFFERING && player.isLoading()) {
+            return false;
+        }
+        return !(mLoaded && player.getVideoFormat() == null);
+    }
+
+    /** How many frames the player's decoder has put out; only a change means anything. */
+    private long framesDecoded() {
+        DecoderCounters counters = mSlot.player.getVideoDecoderCounters();
+        if (counters == null) {
+            return -1;
+        }
+        counters.ensureUpdated();
+        // Dropped and skipped frames count: the decoder is working, if late.
+        return (long) counters.renderedOutputBufferCount + counters.droppedBufferCount
+                + counters.skippedOutputBufferCount;
     }
 
     private void applyPlayWhenReady() {
@@ -692,17 +780,31 @@ public class PooledVideoView extends FrameLayout implements
             // may have been taken for the app in front.
             return;
         }
+        what += " after " + mRetryCount + " retries";
+        if (isWorthRetrying(error.errorCode) && mStall.giveUpOnPlayer() == StallWatch.Verdict.REPLACE) {
+            // Preparing this player again did not help; a new one may.
+            replacePlayer(what);
+            return;
+        }
+        fail(what, error.errorCode, mediaPlayerExtraFor(error.errorCode),
+                error.getErrorCodeName(), String.valueOf(error.getMessage()));
+    }
+
+    /** Gives up on the current source and tells JS, in MediaPlayer's error vocabulary. */
+    private void fail(String what, int errorCode, int mediaPlayerExtra, String errorCodeName, String message) {
         mFailed = true;
         mPool.starts().settled(this);
         mHandler.removeCallbacks(mProgressRunnable);
+        mHandler.removeCallbacks(mRetryRunnable);
+        mHandler.removeCallbacks(mStallCheck);
         reportExpectation();
-        PooledPlayerEvents.failed(System.identityHashCode(this), what + " after " + mRetryCount + " retries", mSrcKey);
+        PooledPlayerEvents.failed(System.identityHashCode(this), what, mSrcKey);
         WritableMap errorMap = Arguments.createMap();
         errorMap.putInt(ReactVideoView.EVENT_PROP_WHAT, MediaPlayer.MEDIA_ERROR_UNKNOWN);
-        errorMap.putInt(ReactVideoView.EVENT_PROP_EXTRA, mediaPlayerExtraFor(error.errorCode));
-        errorMap.putInt("errorCode", error.errorCode);
-        errorMap.putString("errorCodeName", error.getErrorCodeName());
-        errorMap.putString("errorString", String.valueOf(error.getMessage()));
+        errorMap.putInt(ReactVideoView.EVENT_PROP_EXTRA, mediaPlayerExtra);
+        errorMap.putInt("errorCode", errorCode);
+        errorMap.putString("errorCodeName", errorCodeName);
+        errorMap.putString("errorString", message);
         WritableMap event = Arguments.createMap();
         event.putMap(ReactVideoView.EVENT_PROP_ERROR, errorMap);
         emit(Events.EVENT_ERROR, event);
