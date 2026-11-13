@@ -99,6 +99,12 @@ public class PooledVideoView extends FrameLayout implements
     /** The current source's first frame is on the surface, so the texture may be shown. */
     private boolean mRevealed = false;
     /** The error was reported to JS; nothing more happens until the source changes. */
+    /**
+     * The errorCodeName of the error a view reports when the playback thread is stuck again
+     * straight after the pool was rebuilt. The app restarts its process on it.
+     */
+    static final String ERROR_PLAYERS_UNRESPONSIVE = "ERROR_CODE_PLAYERS_UNRESPONSIVE";
+
     private boolean mFailed = false;
     /**
      * The current source is waiting for its turn to start (see {@link StartStagger}). Until
@@ -169,8 +175,12 @@ public class PooledVideoView extends FrameLayout implements
             if (stuckMs > 0) {
                 // A new player would start on the same thread, so it would not start.
                 if (!mPool.rebuild(what)) {
+                    // The pool was rebuilt a moment ago and its new thread is stuck too, as
+                    // when the device's codec service stops answering this process. Nothing
+                    // in the process gets the players back; a new process does, so this
+                    // error has a name of its own for the app to act on.
                     fail(what, PlaybackException.ERROR_CODE_TIMEOUT, MEDIA_ERROR_SYSTEM,
-                            "ERROR_CODE_TIMEOUT", "The video players stopped responding");
+                            ERROR_PLAYERS_UNRESPONSIVE, "The video players stopped responding");
                 }
                 // Rebuilt: onPlayerLost has started the source again on a new player.
             } else if (verdict == StallWatch.Verdict.REPLACE) {
