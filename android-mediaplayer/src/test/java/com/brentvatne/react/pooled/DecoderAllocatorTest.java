@@ -144,4 +144,20 @@ public class DecoderAllocatorTest {
         empty.release(A);
         assertEquals(0, empty.used(A));
     }
+
+    @Test
+    public void restoringCapacitiesUndoesWhatAFallbackTaught() {
+        DecoderAllocator allocator = new DecoderAllocator(Arrays.asList("hw"), Arrays.asList(4));
+        assertEquals("hw", allocator.reserve());
+        assertEquals("hw", allocator.reserve());
+        allocator.reportActual("hw", "software");
+        assertEquals(1, allocator.totalCapacity());
+        assertNull(allocator.reserve());
+
+        allocator.restoreCapacities();
+
+        assertEquals(4, allocator.totalCapacity());
+        assertEquals(1, allocator.used("hw"));
+        assertEquals("hw", allocator.reserve());
+    }
 }

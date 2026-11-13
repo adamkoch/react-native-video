@@ -97,6 +97,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  * new player takes its place. That is the release the pool otherwise avoids, so it is done
  * only for a player that is no use as it is.
  *
+ * <h3>When the playback thread itself stops</h3>
+ * All the players play on one thread, and a decoder call can block it for good. Then no player
+ * shows a frame and a replacement never starts. The pool notices ({@link ThreadPulse}) and
+ * {@link #rebuild}s: every player is given up, and the views get new ones on a new thread.
+ *
  * Must be used from the main thread only, except where noted.
  */
 public final class PooledPlayerPool {
@@ -134,23 +139,103 @@ public final class PooledPlayerPool {
     /** Something that wants a player; called on the main thread when one is free. */
     public interface Borrower {
         void onPlayerAvailable(Slot slot);
+
+        /**
+         * The player this borrower holds has been given up by {@link #rebuild}. The borrower
+         * must let go of it, without giving it back, and may borrow again at once.
+         */
+        void onPlayerLost();
     }
 
+    /** The pause between two of the old players that {@link #rebuild} releases. */
+    static final long RETIRE_GAP_MS = 250;
+
+    /** How much of the playback thread's stack goes into a report. */
+    private static final int STACK_FRAMES = 12;
+
     private static HandlerThread sPlaybackThread;
+    private static Handler sPlaybackHandler;
+    private static int sPlaybackThreads;
+    private static final ThreadPulse sPulse = new ThreadPulse();
 
     /**
      * One playback thread for every pooled player. By default each ExoPlayer starts its own, and a
      * grid of eight then has eight threads waking independently many times a second; on a Chromecast
      * that costs about twice the CPU of a single thread doing the same work, and the UI loses frames
-     * to it. The pool's players live for the whole process, so the thread is never stopped.
+     * to it. The pool's players live for the whole process, so the thread is not stopped; it is
+     * only left behind, by {@link #rebuild}, if it stops answering.
      */
     static synchronized Looper playbackLooper() {
         if (sPlaybackThread == null) {
+            sPlaybackThreads++;
             // The priority ExoPlayer gives its own playback thread.
-            sPlaybackThread = new HandlerThread("PooledPlayback", Process.THREAD_PRIORITY_AUDIO);
+            sPlaybackThread = new HandlerThread(
+                    sPlaybackThreads == 1 ? "PooledPlayback" : "PooledPlayback:" + sPlaybackThreads,
+                    Process.THREAD_PRIORITY_AUDIO);
             sPlaybackThread.start();
+            sPlaybackHandler = new Handler(sPlaybackThread.getLooper());
         }
         return sPlaybackThread.getLooper();
+    }
+
+    /** The next player is created on a new playback thread. Returns the thread left behind. */
+    private static synchronized HandlerThread leavePlaybackThread() {
+        HandlerThread old = sPlaybackThread;
+        sPlaybackThread = null;
+        sPlaybackHandler = null;
+        sPulse.reset();
+        return old;
+    }
+
+    /**
+     * Asks the playback thread whether it still answers, if it has not been asked lately. Views
+     * call this from their stall checks, so the thread is only asked while a video is loaded.
+     */
+    void checkPlaybackThread() {
+        int question = sPulse.ask(SystemClock.uptimeMillis());
+        if (question == 0) {
+            return;
+        }
+        Handler handler;
+        synchronized (PooledPlayerPool.class) {
+            handler = sPlaybackHandler;
+        }
+        if (handler == null) {
+            // No player yet, so nothing to be stuck.
+            sPulse.answer(question);
+            return;
+        }
+        handler.post(() -> sPulse.answer(question));
+    }
+
+    /**
+     * How long the playback thread has left {@link #checkPlaybackThread} unanswered, if that is
+     * long enough to call it stuck; 0 otherwise.
+     */
+    long playbackThreadStuckMs() {
+        long now = SystemClock.uptimeMillis();
+        return sPulse.stuck(now) ? sPulse.silentMs(now) : 0;
+    }
+
+    /** What the playback thread is doing. Class and method names only. */
+    private static String playbackThreadStack() {
+        HandlerThread thread;
+        synchronized (PooledPlayerPool.class) {
+            thread = sPlaybackThread;
+        }
+        if (thread == null) {
+            return "no playback thread";
+        }
+        StringBuilder text = new StringBuilder(thread.getName()).append(' ').append(thread.getState());
+        try {
+            StackTraceElement[] stack = thread.getStackTrace();
+            for (int i = 0; i < stack.length && i < STACK_FRAMES; i++) {
+                text.append(" < ").append(stack[i].getClassName()).append('.').append(stack[i].getMethodName());
+            }
+        } catch (RuntimeException e) {
+            text.append(" (no stack: ").append(e.getClass().getSimpleName()).append(')');
+        }
+        return text.toString();
     }
 
     /** How far ahead of the picture a player reads its source. */
@@ -244,6 +329,8 @@ public final class PooledPlayerPool {
         final ReservingSelector selector;
         /** The video decoder the player last created, for error reports. Main thread. */
         String decoder;
+        /** Who has the player now; null while it is free. Main thread. */
+        Borrower holder;
 
         Slot(Context context, int index, boolean hardware, Decoders decoders) {
             this.index = index;
@@ -300,6 +387,13 @@ public final class PooledPlayerPool {
     /** The device's hardware decoders and who has reserved them, per MIME type. Thread-safe. */
     static final class Decoders {
         private final Map<String, DecoderAllocator> mAllocators = new HashMap<>();
+
+        /** The decoders may have room again for the players they turned away. */
+        synchronized void restoreCapacities() {
+            for (DecoderAllocator allocator : mAllocators.values()) {
+                allocator.restoreCapacities();
+            }
+        }
 
         synchronized DecoderAllocator allocatorFor(String mimeType) {
             DecoderAllocator allocator = mAllocators.get(mimeType);
@@ -469,6 +563,7 @@ public final class PooledPlayerPool {
     private boolean mOverflowScheduled;
     private int mPrewarmTarget;
     private boolean mPrewarmScheduled;
+    private final RebuildBackoff mRebuilds = new RebuildBackoff();
 
     private final StartStagger mStarts = new StartStagger(new StartStagger.Scheduler() {
         @Override
@@ -585,6 +680,7 @@ public final class PooledPlayerPool {
                 slot = create(true);
             }
             if (slot != null) {
+                slot.holder = borrower;
                 return slot;
             }
         }
@@ -610,6 +706,11 @@ public final class PooledPlayerPool {
     public void giveBack(Slot slot) {
         // Pause only. stop() and clearMediaItems() would release the codec, which is exactly
         // what the pool exists to avoid; the next borrower replaces the media item instead.
+        slot.holder = null;
+        if (!mAll.contains(slot)) {
+            // Given up by rebuild() while the borrower still had it.
+            return;
+        }
         slot.player.setPlayWhenReady(false);
         mFree.addLast(slot);
         if (!mWaiting.isEmpty()) {
@@ -633,6 +734,8 @@ public final class PooledPlayerPool {
         // First, so that the new player can have the old one's decoder.
         old.retire();
         Slot fresh = new Slot(mContext, old.index, old.hardware, mDecoders);
+        fresh.holder = old.holder;
+        old.holder = null;
         if (at >= 0) {
             mAll.set(at, fresh);
         } else {
@@ -645,6 +748,86 @@ public final class PooledPlayerPool {
                     ? " hardware " + fresh.selector.reservationFor(PRIMARY_MIME_TYPE) : " software"), null);
         }
         return fresh;
+    }
+
+    /**
+     * The last resort for a playback thread that has stopped answering: gives up every player
+     * and lets the views that had one borrow again. The players they get are new ones, on a
+     * new playback thread. Each holder is told with {@link Borrower#onPlayerLost}, the caller
+     * included, before this returns.
+     *
+     * The old players are released afterwards, one at a time: each release waits half a second
+     * for the thread that does not answer. The old thread is told to end, which it does if it
+     * ever comes back. Until then it keeps its players' decoders, so the new players may get
+     * fewer hardware decoders and some views may wait for a player.
+     *
+     * @return false if the pool was rebuilt too recently ({@link RebuildBackoff}); nothing
+     *     was done.
+     */
+    public boolean rebuild(String why) {
+        long now = SystemClock.elapsedRealtime();
+        String state = why + "; " + describe() + "; " + playbackThreadStack();
+        if (!mRebuilds.allow(now)) {
+            Log.w(TAG, "not rebuilding for another " + mRebuilds.waitMs(now) + "ms: " + state);
+            PooledPlayerEvents.event("pool_rebuild_refused", 0, state, null);
+            return false;
+        }
+        Log.w(TAG, "rebuilding: " + state);
+        PooledPlayerEvents.event("pool_rebuilding", 0, state, null);
+
+        final HandlerThread oldThread = leavePlaybackThread();
+        final ArrayList<Slot> old = new ArrayList<>(mAll);
+        mAll.clear();
+        mFree.clear();
+        mHardwarePlayers = 0;
+        mSoftwarePlayers = 0;
+        ArrayList<Borrower> holders = new ArrayList<>();
+        for (Slot slot : old) {
+            // Now, so that the new players can reserve the decoders.
+            slot.selector.release();
+            if (slot.holder != null) {
+                holders.add(slot.holder);
+                slot.holder = null;
+            }
+        }
+        for (Borrower holder : holders) {
+            try {
+                holder.onPlayerLost();
+            } catch (RuntimeException e) {
+                Log.w(TAG, "a view did not take the rebuild", e);
+            }
+        }
+        mHandler.postDelayed(new Runnable() {
+            private int next;
+
+            @Override
+            public void run() {
+                if (next < old.size()) {
+                    old.get(next++).retire();
+                    mHandler.postDelayed(this, RETIRE_GAP_MS);
+                } else if (oldThread != null) {
+                    // Runs only if the old thread comes back, after it has let its decoders go.
+                    new Handler(oldThread.getLooper()).post(() -> mHandler.post(() -> {
+                        Log.w(TAG, oldThread.getName() + " came back; its decoders are free again");
+                        PooledPlayerEvents.event("old_playback_thread_back", 0, oldThread.getName(), null);
+                        mDecoders.restoreCapacities();
+                        serveWaiting(true);
+                    }));
+                    oldThread.quitSafely();
+                }
+            }
+        }, RETIRE_GAP_MS);
+        return true;
+    }
+
+    /** Every player's state, for a report. */
+    private String describe() {
+        StringBuilder text = new StringBuilder("players");
+        for (Slot slot : mAll) {
+            text.append(' ').append(slot.index).append(slot.hardware ? "" : "sw")
+                    .append(slot.holder == null ? ":free" : ":state" + slot.player.getPlaybackState());
+        }
+        return text.toString();
     }
 
     private void serveWaiting(boolean allowSoftware) {
@@ -672,7 +855,9 @@ public final class PooledPlayerPool {
                 }
                 return;
             }
-            mWaiting.pollFirst().onPlayerAvailable(slot);
+            Borrower borrower = mWaiting.pollFirst();
+            slot.holder = borrower;
+            borrower.onPlayerAvailable(slot);
         }
     }
 

@@ -24,6 +24,7 @@ public final class DecoderAllocator {
 
     private final String[] mNames;
     private final int[] mCapacity;
+    private final int[] mFirstCapacity;
     private final int[] mUsed;
 
     /**
@@ -41,6 +42,18 @@ public final class DecoderAllocator {
         for (int i = 0; i < mNames.length; i++) {
             Integer reported = reportedCapacities.get(i);
             mCapacity[i] = sanitizeCapacity(reported == null ? 0 : reported);
+        }
+        mFirstCapacity = mCapacity.clone();
+    }
+
+    /**
+     * Forgets what {@link #reportActual} learnt: every decoder has the capacity it started
+     * with again, or the number of players it has now if that is more. For when the reason
+     * the decoders were full has gone.
+     */
+    public synchronized void restoreCapacities() {
+        for (int i = 0; i < mCapacity.length; i++) {
+            mCapacity[i] = Math.max(mFirstCapacity[i], mUsed[i]);
         }
     }
 

@@ -46,7 +46,9 @@ import com.yqritc.scalablevideoview.Size;
  *
  * A player that reports an error is prepared again a few times. One that still fails, or that
  * stops putting out frames without reporting anything, is replaced with a new player
- * ({@link StallWatch}); when that does not help either, the error goes to JS.
+ * ({@link StallWatch}); when that does not help either, the error goes to JS. If the players
+ * have all stopped because their playback thread has, the pool is rebuilt instead
+ * ({@link PooledPlayerPool#rebuild}).
  */
 @SuppressLint("ViewConstructor")
 public class PooledVideoView extends FrameLayout implements
@@ -151,17 +153,27 @@ public class PooledVideoView extends FrameLayout implements
                 // load() starts the checks again.
                 return;
             }
+            mPool.checkPlaybackThread();
             StallWatch.Verdict verdict =
                     mStall.check(shouldBeDecoding(), framesDecoded(), SystemClock.elapsedRealtime());
             if (verdict == StallWatch.Verdict.OK) {
                 mHandler.postDelayed(this, StallWatch.CHECK_MS);
                 return;
             }
+            long stuckMs = mPool.playbackThreadStuckMs();
             String what = "no frames for " + StallWatch.STALL_MS + "ms player " + mSlot.index
                     + (mSlot.hardware ? "" : " software") + " decoder " + mSlot.decoder
-                    + " state " + mSlot.player.getPlaybackState();
+                    + " state " + mSlot.player.getPlaybackState()
+                    + (stuckMs > 0 ? " playback thread silent for " + stuckMs + "ms" : "");
             Log.w(TAG, what);
-            if (verdict == StallWatch.Verdict.REPLACE) {
+            if (stuckMs > 0) {
+                // A new player would start on the same thread, so it would not start.
+                if (!mPool.rebuild(what)) {
+                    fail(what, PlaybackException.ERROR_CODE_TIMEOUT, MEDIA_ERROR_SYSTEM,
+                            "ERROR_CODE_TIMEOUT", "The video players stopped responding");
+                }
+                // Rebuilt: onPlayerLost has started the source again on a new player.
+            } else if (verdict == StallWatch.Verdict.REPLACE) {
                 replacePlayer(what);
             } else {
                 fail(what, PlaybackException.ERROR_CODE_TIMEOUT, MEDIA_ERROR_SYSTEM,
@@ -360,6 +372,28 @@ public class PooledVideoView extends FrameLayout implements
             // Several waiting views can be given players in the same pass.
             requestStart();
         }
+    }
+
+    @Override
+    public void onPlayerLost() {
+        if (mSlot == null) {
+            return;
+        }
+        PooledPlayerPool.Slot old = mSlot;
+        mSlot = null;
+        old.player.removeListener(this);
+        detachTexture();
+        mHandler.removeCallbacks(mRetryRunnable);
+        mHandler.removeCallbacks(mProgressRunnable);
+        mHandler.removeCallbacks(mStallCheck);
+        if (mDropped || mUri == null || mFailed) {
+            // Nothing to play now; the next source borrows a player as a new view does.
+            return;
+        }
+        PooledPlayerEvents.event("player_lost", System.identityHashCode(this), "player " + old.index, mSrcKey);
+        // The players that were replaced for this source are gone with the rest.
+        mStall.reset();
+        requestStart();
     }
 
     private void adopt(PooledPlayerPool.Slot slot) {
