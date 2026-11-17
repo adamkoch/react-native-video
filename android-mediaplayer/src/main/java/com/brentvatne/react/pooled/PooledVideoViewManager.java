@@ -25,8 +25,10 @@ public class PooledVideoViewManager extends SimpleViewManager<PooledVideoView> {
     public static final String REACT_CLASS = "RCTVideoPooled";
 
     public static final String PROP_START_STAGGER = "startStagger";
-    public static final long DEFAULT_START_STAGGER_DELAY_MS = 300;
+    public static final long DEFAULT_START_STAGGER_DELAY_MS = 100;
     public static final long MAX_START_STAGGER_DELAY_MS = 10000;
+    public static final String PROP_FADE_IN_MS = "fadeInMs";
+    public static final long MAX_FADE_IN_MS = 2000;
 
     @Override
     public String getName() {
@@ -107,6 +109,17 @@ public class PooledVideoViewManager extends SimpleViewManager<PooledVideoView> {
                 ? stagger.getDouble("delayMs") : DEFAULT_START_STAGGER_DELAY_MS;
         videoView.setStartStagger(new StartStagger.Pacing(
                 waitForFirstFrame, Math.round(Math.max(0, Math.min(delayMs, MAX_START_STAGGER_DELAY_MS)))));
+    }
+
+    /**
+     * How long a clip takes to fade in once its first frame is on the surface, in ms; absent,
+     * null or negative for {@link PooledVideoView#DEFAULT_FADE_IN_MS}.
+     */
+    @ReactProp(name = PROP_FADE_IN_MS, defaultDouble = -1)
+    public void setFadeInMs(final PooledVideoView videoView, double fadeInMs) {
+        videoView.setFadeInMs(Double.isNaN(fadeInMs) || fadeInMs < 0
+                ? PooledVideoView.DEFAULT_FADE_IN_MS
+                : Math.round(Math.min(fadeInMs, MAX_FADE_IN_MS)));
     }
 
     @Override

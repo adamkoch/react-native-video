@@ -1877,17 +1877,17 @@ How the pooled backend behaves:
 - **Staggered starts.** A video starts as soon as it is asked for, unless it has the `startStagger` prop. Videos with the prop are started one after another, in the order they were asked for, so that a screen of several videos does not start them all in the same frame:
 
   ```jsx
-  <Video source={...} startStagger={{ waitForFirstFrame: true, delayMs: 300 }} />
+  <Video source={...} startStagger={{ waitForFirstFrame: true, delayMs: 100 }} />
   ```
 
-  - `delayMs` (default 300): the pause before this video starts.
+  - `delayMs` (default 100): the pause before this video starts.
   - `waitForFirstFrame` (default `true`): the pause counts from the moment the staggered video before this one showed its first frame (or failed). With `false` it counts from the moment that video was started. A video that shows no frame holds up the next one for 1.5 seconds at most.
   - `startStagger={true}` or `{}` uses the defaults. `false`, `null` or no prop: no stagger.
 
   The first staggered video, and one with no staggered video before it left to wait for, starts at once. Videos without the prop never wait and are not waited for. The prop is read when a source is set; changing it while the video waits for its turn applies the new values. It is ignored (not passed to the native view) on the MediaPlayer backend and on other platforms.
-- **Changing clips.** The player's surface is hidden until the new clip's first frame is on it, so the previous clip's last frame is never shown; until then the view is transparent and shows whatever is behind it. It then fades in over 180 ms, and `onReadyForDisplay` is sent when the fade starts.
+- **Changing clips.** The player's surface is hidden until the new clip's first frame is on it, so the previous clip's last frame is never shown; until then the view is transparent and shows whatever is behind it. It then fades in over `fadeInMs` (default 100, at most 2000; absent, null or negative for the default), and `onReadyForDisplay` is sent when the fade starts. A change of `fadeInMs` applies from the next first frame.
 - **Audio.** A `muted` view plays with its audio track switched off and creates no audio decoder. An unmuted view plays sound at `volume`. There is no audio focus handling and no `stereoPan`.
 - **Errors.** A failed player is prepared again after 1 second, up to 3 times, before `onError` is sent. The event has the MediaPlayer shape, `{error: {what, extra}}`, with `extra` mapped to the nearest MediaPlayer code, plus `errorCode`, `errorCodeName` and `errorString` from media3.
 - **Background.** When the app goes to the background the players pause (unless `playInBackground`) but keep their decoders. They resume when the app returns.
 
-Supported props: `source` (`file://`, `content://`, `http(s)://` and bundled resource names; no request headers, no APK expansion files), `resizeMode`, `repeat`, `paused`, `muted`, `volume`, `rate`, `seek()`, `progressUpdateInterval`, `startStagger`, `playInBackground`, `preventsDisplaySleepDuringVideoPlayback`. Events: `onLoadStart`, `onLoad`, `onReadyForDisplay`, `onProgress`, `onSeek`, `onEnd`, `onError`. Fullscreen, controls, timed metadata and the stalled/resume events are not implemented.
+Supported props: `source` (`file://`, `content://`, `http(s)://` and bundled resource names; no request headers, no APK expansion files), `resizeMode`, `repeat`, `paused`, `muted`, `volume`, `rate`, `seek()`, `progressUpdateInterval`, `startStagger`, `fadeInMs`, `playInBackground`, `preventsDisplaySleepDuringVideoPlayback`. Events: `onLoadStart`, `onLoad`, `onReadyForDisplay`, `onProgress`, `onSeek`, `onEnd`, `onError`. Fullscreen, controls, timed metadata and the stalled/resume events are not implemented.

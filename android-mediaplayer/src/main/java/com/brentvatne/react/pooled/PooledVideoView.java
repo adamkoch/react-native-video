@@ -64,8 +64,11 @@ public class PooledVideoView extends FrameLayout implements
     /** In-place retries before the error is reported to JS. */
     static final int MAX_RETRIES = 3;
 
-    /** How long a video takes to fade in once its first frame is on the surface. */
-    static final long FADE_IN_MS = 180;
+    /**
+     * How long a video takes to fade in once its first frame is on the surface, unless the
+     * fadeInMs prop says otherwise.
+     */
+    static final long DEFAULT_FADE_IN_MS = 100;
 
     // MediaPlayer's error vocabulary, which JS error handling already understands.
     private static final int MEDIA_ERROR_SYSTEM = -2147479543;
@@ -116,6 +119,7 @@ public class PooledVideoView extends FrameLayout implements
     private boolean mStartAfterProps = false;
     /** How this view's starts are spaced from other views'; null starts them at once. */
     private StartStagger.Pacing mPacing;
+    private long mFadeInMs = DEFAULT_FADE_IN_MS;
     private int mRetryCount = 0;
     private long mSeekTimeMs = 0;
     /** The current source played to its end. */
@@ -243,6 +247,11 @@ public class PooledVideoView extends FrameLayout implements
         prepareForStart();
         mStartAfterProps = true;
         reportExpectation();
+    }
+
+    /** The fade for the next first frame; one already fading keeps its duration. */
+    public void setFadeInMs(long fadeInMs) {
+        mFadeInMs = Math.max(0, fadeInMs);
     }
 
     /** See {@link StartStagger.Pacing}; null starts this view's videos at once. */
@@ -645,7 +654,7 @@ public class PooledVideoView extends FrameLayout implements
         updateTransform();
         if (mTextureView != null) {
             // Alpha only: nothing is laid out or redrawn by the app while it runs.
-            mTextureView.animate().alpha(1f).setDuration(FADE_IN_MS).start();
+            mTextureView.animate().alpha(1f).setDuration(mFadeInMs).start();
         }
         emit(Events.EVENT_READY_FOR_DISPLAY, Arguments.createMap());
         if (PooledPlayerEvents.on()) {

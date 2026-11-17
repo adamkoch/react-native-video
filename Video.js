@@ -74,7 +74,7 @@ export function prewarmAndroidPool(count) {
   return true;
 }
 
-export const DEFAULT_START_STAGGER_DELAY_MS = 300;
+export const DEFAULT_START_STAGGER_DELAY_MS = 100;
 
 /**
  * The `startStagger` prop as the pooled view takes it: `{waitForFirstFrame, delayMs}` with
@@ -471,11 +471,15 @@ export default class Video extends Component {
       this._NativeVideo = nativeVideoComponent();
     }
     const NativeVideo = this._NativeVideo;
-    // Only the pooled view knows startStagger; the other views are never sent it.
+    // Only the pooled view knows startStagger and fadeInMs; the other views are never sent them.
     if (RCTVideoPooled && NativeVideo === RCTVideoPooled) {
       nativeProps.startStagger = normalizeStartStagger(nativeProps.startStagger);
+      if (!(typeof nativeProps.fadeInMs === 'number' && nativeProps.fadeInMs >= 0)) {
+        delete nativeProps.fadeInMs;
+      }
     } else {
       delete nativeProps.startStagger;
+      delete nativeProps.fadeInMs;
     }
 
     return (
@@ -622,6 +626,7 @@ Video.propTypes = {
       delayMs: PropTypes.number,
     }),
   ]),
+  fadeInMs: PropTypes.number,
   subtitleStyle: PropTypes.shape({
     paddingTop: PropTypes.number,
     paddingBottom: PropTypes.number,
