@@ -440,6 +440,7 @@ public class PooledVideoView extends FrameLayout implements
         if (other == null) {
             Log.w(TAG, "size change unavoidable, no spare player: " + detail);
             PooledPlayerEvents.event("size_change_unavoidable", System.identityHashCode(this), detail, mSrcKey);
+            PooledPlayerEvents.key("size_change_unavoidable", detail);
             return;
         }
         Log.i(TAG, "kept decoder sizes: " + detail + " on player " + other.index);
@@ -890,6 +891,9 @@ public class PooledVideoView extends FrameLayout implements
         mHandler.removeCallbacks(mStallCheck);
         reportExpectation();
         PooledPlayerEvents.failed(System.identityHashCode(this), what, mSrcKey);
+        // Never the error message: it can name the file. The code and the decoder are enough.
+        PooledPlayerEvents.key("playback_failed", errorCodeName + (mSlot == null ? ""
+                : " player " + mSlot.index + " decoder " + mSlot.decoder));
         WritableMap errorMap = Arguments.createMap();
         errorMap.putInt(ReactVideoView.EVENT_PROP_WHAT, MediaPlayer.MEDIA_ERROR_UNKNOWN);
         errorMap.putInt(ReactVideoView.EVENT_PROP_EXTRA, mediaPlayerExtra);

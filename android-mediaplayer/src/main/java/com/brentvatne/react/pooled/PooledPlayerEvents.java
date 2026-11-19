@@ -26,13 +26,40 @@ public final class PooledPlayerEvents {
         void frame(int view);
     }
 
+    /**
+     * The few events worth knowing about on every display, whatever the {@link Sink} is doing:
+     * a pool rebuild, a replaced or failed player, a full pool, a decoder that had to change
+     * picture size. Rare by design (not per frame or per clip), so an app can keep them all,
+     * for example as crash-report breadcrumbs.
+     */
+    public interface KeySink {
+        void key(String name, String detail);
+    }
+
     private static volatile Sink sSink;
+    private static volatile KeySink sKeySink;
 
     private PooledPlayerEvents() {
     }
 
     public static void setSink(Sink sink) {
         sSink = sink;
+    }
+
+    public static void setKeySink(KeySink sink) {
+        sKeySink = sink;
+    }
+
+    /** A key event; see {@link KeySink}. */
+    static void key(String name, String detail) {
+        KeySink sink = sKeySink;
+        if (sink != null) {
+            try {
+                sink.key(name, detail);
+            } catch (Throwable ignored) {
+                // Reporting must never get in the way of playing.
+            }
+        }
     }
 
     static boolean on() {

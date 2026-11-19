@@ -780,6 +780,7 @@ public final class PooledPlayerPool {
         }
         Log.w(TAG, "replaced player " + old.index + (old.hardware
                 ? " reserved " + fresh.selector.reservationFor(PRIMARY_MIME_TYPE) : " preferring software"));
+        PooledPlayerEvents.key("player_replaced", "player " + old.index + " decoder " + old.decoder);
         if (PooledPlayerEvents.on()) {
             PooledPlayerEvents.event("player_replaced", 0, "player " + old.index + (old.hardware
                     ? " hardware " + fresh.selector.reservationFor(PRIMARY_MIME_TYPE) : " software"), null);
@@ -807,10 +808,12 @@ public final class PooledPlayerPool {
         if (!mRebuilds.allow(now)) {
             Log.w(TAG, "not rebuilding for another " + mRebuilds.waitMs(now) + "ms: " + state);
             PooledPlayerEvents.event("pool_rebuild_refused", 0, state, null);
+            PooledPlayerEvents.key("pool_rebuild_refused", why + "; " + describe());
             return false;
         }
         Log.w(TAG, "rebuilding: " + state);
         PooledPlayerEvents.event("pool_rebuilding", 0, state, null);
+        PooledPlayerEvents.key("pool_rebuilding", why + "; " + describe());
 
         final HandlerThread oldThread = leavePlaybackThread();
         final ArrayList<Slot> old = new ArrayList<>(mAll);
@@ -883,6 +886,7 @@ public final class PooledPlayerPool {
             }
             if (slot == null) {
                 Log.w(TAG, "all " + mAll.size() + " players are in use, " + mWaiting.size() + " views waiting");
+                PooledPlayerEvents.key("pool_full", mAll.size() + " players in use, " + mWaiting.size() + " views waiting");
                 if (PooledPlayerEvents.on()) {
                     PooledPlayerEvents.event("pool_full", 0,
                             mAll.size() + " players in use, " + mWaiting.size() + " views waiting", null);
