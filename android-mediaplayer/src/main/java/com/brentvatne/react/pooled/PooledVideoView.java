@@ -119,6 +119,8 @@ public class PooledVideoView extends FrameLayout implements
     private boolean mStartAfterProps = false;
     /** How this view's starts are spaced from other views'; null starts them at once. */
     private StartStagger.Pacing mPacing;
+    /** The coded size of the current source, for {@link SizeAffinity}; 0 if unknown. */
+    private long mWantedSize;
     private long mFadeInMs = DEFAULT_FADE_IN_MS;
     private int mRetryCount = 0;
     private long mSeekTimeMs = 0;
@@ -306,6 +308,10 @@ public class PooledVideoView extends FrameLayout implements
             mPool.starts().cancel(this);
             return;
         }
+        mWantedSize = PooledPlayerPool.keepsDecoderSize() ? Mp4VideoSize.forUri(mUri) : 0;
+        if (mSlot != null && SizeAffinity.wouldSwitch(mSlot.codedSize, mWantedSize)) {
+            keepDecoderSize();
+        }
         if (mSlot == null) {
             PooledPlayerPool.Slot slot = mPool.borrow(this);
             if (slot == null) {
@@ -413,6 +419,38 @@ public class PooledVideoView extends FrameLayout implements
         // The players that were replaced for this source are gone with the rest.
         mStall.reset();
         requestStart();
+    }
+
+    @Override
+    public long wantedSize() {
+        return mWantedSize;
+    }
+
+    /**
+     * The next clip is another size than this view's player last decoded, and some decoders fail
+     * when a codec changes size (see {@link SizeAffinity}). Moves to a free player that last
+     * decoded this size, or has decoded nothing, and gives the current one back still at its
+     * size. With no such player free the view keeps its own and the decoder changes size.
+     */
+    private void keepDecoderSize() {
+        PooledPlayerPool.Slot old = mSlot;
+        PooledPlayerPool.Slot other = mPool.exchangeFor(this, mWantedSize);
+        String detail = "player " + old.index + " " + Mp4VideoSize.describe(old.codedSize) + " -> "
+                + Mp4VideoSize.describe(mWantedSize);
+        if (other == null) {
+            Log.w(TAG, "size change unavoidable, no spare player: " + detail);
+            PooledPlayerEvents.event("size_change_unavoidable", System.identityHashCode(this), detail, mSrcKey);
+            return;
+        }
+        Log.i(TAG, "kept decoder sizes: " + detail + " on player " + other.index);
+        PooledPlayerEvents.event("size_exchange", System.identityHashCode(this),
+                detail + " on player " + other.index, mSrcKey);
+        mSlot = null;
+        old.player.removeListener(this);
+        old.player.setPlayWhenReady(false);
+        detachTexture();
+        mPool.giveBack(old);
+        adopt(other);
     }
 
     private void adopt(PooledPlayerPool.Slot slot) {

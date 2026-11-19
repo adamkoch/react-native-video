@@ -19,6 +19,12 @@ public class PooledPlayersModule extends ReactContextBaseJavaModule {
         return NAME;
     }
 
+    /** See {@link PooledPlayerPool#setKeepDecoderSize}. */
+    @ReactMethod
+    public void setKeepDecoderSize(final boolean keep) {
+        PooledPlayerPool.setKeepDecoderSize(keep);
+    }
+
     /** See {@link PooledPlayerPool#prewarm}. Creates nothing until it is called. */
     @ReactMethod
     public void prewarm(final double count) {

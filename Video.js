@@ -74,6 +74,26 @@ export function prewarmAndroidPool(count) {
   return true;
 }
 
+/**
+ * Android pooled backend: when a video's next clip has another picture size than its player
+ * last decoded, move it to a free player already at that size instead of making the decoder
+ * change size, which some hardware decoders do not survive (see API.md). On by default; pass
+ * false to turn it off as a fallback. Applies from the next clip each video starts. Can be
+ * called before any pooled video exists. Returns true if the setting was passed on: false on other platforms and on a native
+ * build that cannot do it.
+ */
+export function setAndroidPoolKeepsDecoderSize(enabled) {
+  if (Platform.OS !== 'android') {
+    return false;
+  }
+  const pool = NativeModules.RCTVideoPooledPlayers;
+  if (!pool || typeof pool.setKeepDecoderSize !== 'function') {
+    return false;
+  }
+  pool.setKeepDecoderSize(enabled === true);
+  return true;
+}
+
 export const DEFAULT_START_STAGGER_DELAY_MS = 100;
 
 /**

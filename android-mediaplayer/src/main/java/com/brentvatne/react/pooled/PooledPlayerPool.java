@@ -13,9 +13,11 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.view.Surface;
 
+import javax.annotation.Nullable;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.datasource.DefaultDataSource;
+import androidx.media3.exoplayer.DecoderReuseEvaluation;
 import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
@@ -139,6 +141,14 @@ public final class PooledPlayerPool {
     /** Something that wants a player; called on the main thread when one is free. */
     public interface Borrower {
         void onPlayerAvailable(Slot slot);
+
+        /**
+         * The coded size of the clip this borrower is about to play (see {@link Mp4VideoSize}),
+         * so that it gets a player already at that size; 0 if unknown.
+         */
+        default long wantedSize() {
+            return 0;
+        }
 
         /**
          * The player this borrower holds has been given up by {@link #rebuild}. The borrower
@@ -331,6 +341,11 @@ public final class PooledPlayerPool {
         String decoder;
         /** Who has the player now; null while it is free. Main thread. */
         Borrower holder;
+        /**
+         * The coded size of the last video the player's decoder was given (see
+         * {@link Mp4VideoSize#pack}); 0 before its first. Main thread.
+         */
+        long codedSize;
 
         Slot(Context context, int index, boolean hardware, Decoders decoders) {
             this.index = index;
@@ -363,6 +378,15 @@ public final class PooledPlayerPool {
                                 "player " + Slot.this.index + " " + decoderName + " in " + initializationDurationMs + "ms", null);
                     }
                     selector.onDecoderInitialized(Slot.this.index, decoderName);
+                }
+
+                @Override
+                public void onVideoInputFormatChanged(
+                        EventTime eventTime, Format format, @Nullable DecoderReuseEvaluation reuse) {
+                    long size = Mp4VideoSize.pack(format.width, format.height);
+                    if (size != 0) {
+                        Slot.this.codedSize = size;
+                    }
                 }
             });
             // Set once and never changed: a new surface would make the player reconfigure or
@@ -551,6 +575,7 @@ public final class PooledPlayerPool {
 
     private static PooledPlayerPool sInstance;
     private static int sHardwarePlayerLimit = 0;
+    private static volatile boolean sKeepDecoderSize = true;
 
     private final Context mContext;
     private final Decoders mDecoders = new Decoders();
@@ -628,6 +653,21 @@ public final class PooledPlayerPool {
         sHardwarePlayerLimit = limit;
     }
 
+    /**
+     * Turns {@link SizeAffinity} on or off: whether a view moves to a free player at its next
+     * clip's size instead of having its decoder change size. On by default; JS can turn it off
+     * as a fallback (see {@code setAndroidPoolKeepsDecoderSize} in Video.js), so an app update
+     * can change it without a native build.
+     * Takes effect from the next clip each view starts.
+     */
+    public static void setKeepDecoderSize(boolean keep) {
+        sKeepDecoderSize = keep;
+    }
+
+    static boolean keepsDecoderSize() {
+        return sKeepDecoderSize;
+    }
+
     /** The order in which views start their videos, shared by every pooled view. */
     StartStagger starts() {
         return mStarts;
@@ -675,10 +715,7 @@ public final class PooledPlayerPool {
     public Slot borrow(Borrower borrower) {
         // A view that is already waiting goes first.
         if (mWaiting.isEmpty()) {
-            Slot slot = takeFree(true);
-            if (slot == null && mHardwarePlayers < hardwarePlayerCeiling()) {
-                slot = create(true);
-            }
+            Slot slot = takeHardwareFor(borrower.wantedSize());
             if (slot != null) {
                 slot.holder = borrower;
                 return slot;
@@ -832,10 +869,7 @@ public final class PooledPlayerPool {
 
     private void serveWaiting(boolean allowSoftware) {
         while (!mWaiting.isEmpty()) {
-            Slot slot = takeFree(true);
-            if (slot == null && mHardwarePlayers < hardwarePlayerCeiling()) {
-                slot = create(true);
-            }
+            Slot slot = takeHardwareFor(mWaiting.peekFirst().wantedSize());
             if (slot == null && allowSoftware) {
                 slot = takeFree(false);
                 if (slot == null && mSoftwarePlayers < softwarePlayerCeiling()) {
@@ -859,6 +893,64 @@ public final class PooledPlayerPool {
             slot.holder = borrower;
             borrower.onPlayerAvailable(slot);
         }
+    }
+
+    /**
+     * A free hardware player for a clip of {@code size}: one that last decoded that size, else
+     * one that has decoded nothing, else a new one while the device has decoders to spare, else
+     * any free one (which will change size). Null if none is free and none can be created.
+     */
+    private Slot takeHardwareFor(long size) {
+        Slot slot = keepsDecoderSize() ? takeMatching(size) : takeFree(true);
+        if (slot == null && mHardwarePlayers < hardwarePlayerCeiling()) {
+            slot = create(true);
+        }
+        if (slot == null) {
+            slot = takeFree(true);
+        }
+        return slot;
+    }
+
+    /**
+     * For a view whose player would have to change picture size to play its next clip: a free
+     * hardware player that last decoded {@code size} or nothing yet, or a new one while the
+     * device has decoders to spare; already the caller's. The caller then gives its old player
+     * back, which keeps its decoder at the old size for a later clip of that size. Null if there
+     * is no such player: the caller keeps its own, and its decoder changes size.
+     */
+    public Slot exchangeFor(Borrower borrower, long size) {
+        if (size == 0 || !keepsDecoderSize()) {
+            return null;
+        }
+        Slot slot = takeMatching(size);
+        if (slot == null && mHardwarePlayers < hardwarePlayerCeiling()) {
+            slot = create(true);
+        }
+        if (slot != null) {
+            slot.holder = borrower;
+        }
+        return slot;
+    }
+
+    /** A free hardware player chosen by {@link SizeAffinity}, removed from the free list; or null. */
+    private Slot takeMatching(long size) {
+        ArrayList<Slot> candidates = new ArrayList<>();
+        for (Slot slot : mFree) {
+            if (slot.hardware) {
+                candidates.add(slot);
+            }
+        }
+        long[] sizes = new long[candidates.size()];
+        for (int i = 0; i < sizes.length; i++) {
+            sizes[i] = candidates.get(i).codedSize;
+        }
+        int chosen = SizeAffinity.choose(sizes, size);
+        if (chosen < 0) {
+            return null;
+        }
+        Slot slot = candidates.get(chosen);
+        mFree.remove(slot);
+        return slot;
     }
 
     private Slot takeFree(boolean hardware) {
